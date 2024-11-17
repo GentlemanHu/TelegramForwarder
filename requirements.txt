@@ -5,3 +5,4 @@ black
 pytest
 pylint
 aiosqlite
+metaapi-cloud-sdk
