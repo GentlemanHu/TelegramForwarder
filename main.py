@@ -41,7 +41,7 @@ class ForwardBot:
         
         # Initialize components
         self.channel_manager = ChannelManager(self.db, config, self.client)
-        self.message_handler = MyMessageHandler(self.db, self.client, self.application.bot)
+        self.message_handler = MyMessageHandler(self.db, self.client, self.application.bot,self.config)
         
         # Setup handlers
         self.setup_handlers()
@@ -209,6 +209,8 @@ class ForwardBot:
         except Exception as e:
             logging.error(f"Error stopping bot: {e}")
 
+# main.py (部分更新)
+
 async def main():
     """主函数"""
     # 设置日志
@@ -227,6 +229,11 @@ async def main():
         
         # 创建并启动机器人
         bot = ForwardBot(config)
+        
+        # 初始化所有组件
+        await bot.message_handler.initialize()
+        
+        # 启动机器人
         await bot.start()
         
     except Exception as e:

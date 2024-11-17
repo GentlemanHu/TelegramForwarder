@@ -1,9 +1,8 @@
-# config.py
 from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
+from typing import Optional
 
-# 加载.env文件
 load_dotenv()
 
 @dataclass
@@ -16,8 +15,18 @@ class Config:
     SESSION_NAME: str = os.getenv("SESSION_NAME", "forwarder_session")
     OWNER_ID: int = int(os.getenv("OWNER_ID", "0"))
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "forward_bot.db")
-    # 默认语言设置
     DEFAULT_LANGUAGE: str = os.getenv("DEFAULT_LANGUAGE", "en")
+    
+    # 交易配置
+    META_API_TOKEN: str = os.getenv("META_API_TOKEN")
+    ACCOUNT_ID: str = os.getenv("ACCOUNT_ID")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
+    OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
+    
+    # 交易参数
+    DEFAULT_RISK_PERCENT: float = float(os.getenv("DEFAULT_RISK_PERCENT", "2.0"))
+    MAX_LAYERS: int = int(os.getenv("MAX_LAYERS", "7"))
+    MIN_LOT_SIZE: float = float(os.getenv("MIN_LOT_SIZE", "0.01"))
 
     def __post_init__(self):
         """验证必要的配置是否存在"""
@@ -26,7 +35,10 @@ class Config:
             "API_ID", 
             "API_HASH",
             "PHONE_NUMBER",
-            "OWNER_ID"
+            "OWNER_ID",
+            "META_API_TOKEN",
+            "ACCOUNT_ID",
+            "OPENAI_API_KEY"
         ]
         
         missing_fields = [
@@ -40,8 +52,11 @@ class Config:
                 "Please check your .env file."
             )
 
-        # 确保OWNER_ID是有效的数字
+        # 验证数值类型
         try:
             self.OWNER_ID = int(self.OWNER_ID)
-        except ValueError:
-            raise ValueError("OWNER_ID must be a valid integer")
+            self.DEFAULT_RISK_PERCENT = float(self.DEFAULT_RISK_PERCENT)
+            self.MAX_LAYERS = int(self.MAX_LAYERS)
+            self.MIN_LOT_SIZE = float(self.MIN_LOT_SIZE)
+        except ValueError as e:
+            raise ValueError(f"Invalid configuration value: {str(e)}")
