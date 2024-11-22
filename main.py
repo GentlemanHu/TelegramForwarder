@@ -39,9 +39,11 @@ class ForwardBot:
             config.API_HASH
         )
         
-        # Initialize components
+        # Initialize message handler first
+        self.message_handler = MyMessageHandler(self.db, self.client, self.application.bot, self.config)
+        
+        # Initialize other components that depend on message handler
         self.channel_manager = ChannelManager(self.db, config, self.client)
-        self.message_handler = MyMessageHandler(self.db, self.client, self.application.bot,self.config)
         
         # Setup handlers
         self.setup_handlers()
@@ -149,6 +151,8 @@ class ForwardBot:
         await self.channel_manager.show_channel_management(update, context)
 
 
+
+
     async def initialize(self):
         """初始化机器人配置"""
         try:
@@ -159,11 +163,10 @@ class ForwardBot:
             success = await self.message_handler.initialize()
             if not success:
                 raise Exception("Failed to initialize message handler")
+
+            # 等待消息处理器完全初始化
+            await self.message_handler.initialized_event.wait()
             
-            # 等待消息处理器初始化完成
-            if not await self.message_handler.wait_initialized():
-                raise Exception("Message handler initialization timeout")
-                
             logging.info("Bot initialized successfully")
             
         except Exception as e:
@@ -178,9 +181,6 @@ class ForwardBot:
             
             # 启动 Telethon 客户端
             await self.client.start(phone=self.config.PHONE_NUMBER)
-            
-            # 启动清理任务
-            await self.message_handler.start_cleanup_task()
             
             # 注册消息处理器
             @self.client.on(events.NewMessage)

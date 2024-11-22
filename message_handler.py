@@ -18,25 +18,21 @@ from trade_processor import (
 
 
 class StandardizedEvent:
-    """标准化的事件对象"""
     def __init__(self, message, chat=None):
         self.message = message
         self._chat = chat
         
     @property
     def text(self) -> str:
-        """获取消息文本"""
         if hasattr(self.message, 'text'):
             return self.message.text
         return str(self.message)
 
     async def get_chat(self):
-        """获取聊天对象"""
         return self._chat
 
     @classmethod
     async def from_telegram_event(cls, event):
-        """从Telegram事件创建标准化事件"""
         chat = await event.get_chat()
         return cls(event.message, chat)
 
@@ -53,7 +49,8 @@ class MyMessageHandler:
         self.signal_tasks: Set[asyncio.Task] = set()
         self._initialized = False
         self.sync_complete = asyncio.Event()
-
+        self.initialized_event = asyncio.Event()
+        
         # 初始化交易系统组件
         self.trade_config = TradeConfig(
             meta_api_token=config.META_API_TOKEN,
@@ -65,8 +62,64 @@ class MyMessageHandler:
             min_lot_size=config.MIN_LOT_SIZE
         )
         
-        self.trade_manager = TradeManager(self.trade_config)
-        self.ai_analyzer = AIAnalyzer(self.trade_config)
+        # 在这里只创建实例，不进行初始化
+        self.trade_manager = None
+        self.position_manager = None
+        self.signal_processor = None
+        self.ai_analyzer = None
+
+    async def initialize(self) -> bool:
+        """初始化所有组件"""
+        if self._initialized:
+            return True
+            
+        try:
+            # 初始化 AI 分析器
+            self.ai_analyzer = AIAnalyzer(self.trade_config)
+            
+            # 初始化交易管理器
+            self.trade_manager = TradeManager(self.trade_config)
+            success = await self.trade_manager.initialize()
+            if not success:
+                logging.error("Failed to initialize trading manager")
+                return False
+
+            # 等待同步完成
+            sync_success = await self.trade_manager.wait_synchronized()
+            if not sync_success:
+                logging.warning("Trading system initialized but synchronization timed out")
+            else:
+                logging.info("Trading system synchronized successfully")
+
+            # 初始化 position manager
+            self.position_manager = PositionManager(self.trade_manager)
+            pos_success = await self.position_manager.initialize()
+            if not pos_success:
+                logging.error("Failed to initialize position manager")
+                return False
+
+            # 初始化 signal processor
+            self.signal_processor = SignalProcessor(
+                self.trade_config,
+                self.ai_analyzer,
+                self.position_manager
+            )
+
+            # 启动清理任务
+            await self.start_cleanup_task()
+            
+            self._initialized = True
+            self.sync_complete.set()
+            self.initialized_event.set()
+            
+            logging.info("Message handler initialized successfully")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error during initialization: {e}")
+            return False
+
+
 
     async def handle_channel_message(self, event):
         """处理频道消息"""
@@ -118,52 +171,6 @@ class MyMessageHandler:
             logging.error(f"Error handling channel message: {e}")
             if hasattr(e, '__dict__'):
                 logging.error(f"Error details: {e.__dict__}")
-
-    async def initialize(self):
-        """初始化所有组件"""
-        if self._initialized:
-            return True
-            
-        try:
-            # 初始化交易管理器
-            success = await self.trade_manager.initialize()
-            if not success:
-                logging.error("Failed to initialize trading manager")
-                return False
-
-            # 等待同步完成
-            sync_success = await self.trade_manager.wait_synchronized()
-            if not sync_success:
-                logging.warning("Trading system initialized but synchronization timed out")
-            else:
-                logging.info("Trading system synchronized successfully")
-
-            # 初始化 position manager
-            self.position_manager = PositionManager(self.trade_manager)
-            pos_success = await self.position_manager.initialize()
-            if not pos_success:
-                logging.error("Failed to initialize position manager")
-                return False
-
-            # 初始化 signal processor
-            self.signal_processor = SignalProcessor(
-                self.trade_config,
-                self.ai_analyzer,
-                self.position_manager
-            )
-
-            # 启动清理任务
-            await self.start_cleanup_task()
-            
-            self._initialized = True
-            self.sync_complete.set()
-            
-            logging.info("Message handler initialized successfully")
-            return True
-            
-        except Exception as e:
-            logging.error(f"Error during initialization: {e}")
-            return False
 
 
     async def wait_initialized(self, timeout: float = 300) -> bool:
