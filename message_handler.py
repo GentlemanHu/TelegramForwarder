@@ -17,8 +17,33 @@ from trade_processor import (
 )
 
 
+class StandardizedEvent:
+    """标准化的事件对象"""
+    def __init__(self, message, chat=None):
+        self.message = message
+        self._chat = chat
+        
+    @property
+    def text(self) -> str:
+        """获取消息文本"""
+        if hasattr(self.message, 'text'):
+            return self.message.text
+        return str(self.message)
+
+    async def get_chat(self):
+        """获取聊天对象"""
+        return self._chat
+
+    @classmethod
+    async def from_telegram_event(cls, event):
+        """从Telegram事件创建标准化事件"""
+        chat = await event.get_chat()
+        return cls(event.message, chat)
+
+
 
 class MyMessageHandler:
+
     def __init__(self, db, client: TelegramClient, bot, config):
         self.db = db
         self.client = client
@@ -42,7 +67,57 @@ class MyMessageHandler:
         
         self.trade_manager = TradeManager(self.trade_config)
         self.ai_analyzer = AIAnalyzer(self.trade_config)
-        self.initialized_event = asyncio.Event()
+
+    async def handle_channel_message(self, event):
+        """处理频道消息"""
+        try:
+            # 确保已初始化
+            if not self._initialized:
+                success = await self.initialize()
+                if not success:
+                    logging.error("Failed to initialize message handler")
+                    return
+
+            # 创建标准化事件
+            std_event = await StandardizedEvent.from_telegram_event(event)
+            chat = await std_event.get_chat()
+            
+            channel_info = self.db.get_channel_info(chat.id)
+            if not channel_info or not channel_info.get('is_active'):
+                return
+
+            # 处理交易信号
+            if std_event.text:
+                if channel_info['channel_type'] == 'MONITOR':
+                    logging.info(f"Processing signal from channel {chat.id}")
+                    
+                    # 清理已完成的任务
+                    self.cleanup_finished_tasks()
+                    
+                    # 创建新的信号处理任务
+                    task = asyncio.create_task(
+                        self.signal_processor.handle_channel_message(std_event)
+                    )
+                    self.signal_tasks.add(task)
+                    task.add_done_callback(lambda t: self.signal_tasks.discard(t))
+
+            # 转发消息处理
+            forward_channels = self.db.get_all_forward_channels(chat.id)
+            if forward_channels:
+                for channel in forward_channels:
+                    try:
+                        await self.handle_forward_message(
+                            std_event.message, 
+                            chat,
+                            channel
+                        )
+                    except Exception as e:
+                        logging.error(f"Error forwarding to channel {channel.get('channel_id')}: {e}")
+
+        except Exception as e:
+            logging.error(f"Error handling channel message: {e}")
+            if hasattr(e, '__dict__'):
+                logging.error(f"Error details: {e.__dict__}")
 
     async def initialize(self):
         """初始化所有组件"""
@@ -81,7 +156,6 @@ class MyMessageHandler:
             await self.start_cleanup_task()
             
             self._initialized = True
-            self.initialized_event.set()
             self.sync_complete.set()
             
             logging.info("Message handler initialized successfully")
@@ -90,6 +164,7 @@ class MyMessageHandler:
         except Exception as e:
             logging.error(f"Error during initialization: {e}")
             return False
+
 
     async def wait_initialized(self, timeout: float = 300) -> bool:
         """等待初始化完成"""
@@ -102,63 +177,6 @@ class MyMessageHandler:
         except asyncio.TimeoutError:
             logging.error("Initialization timeout")
             return False
-
-    async def handle_channel_message(self, event):
-        """处理频道消息"""
-        try:
-            # 确保已初始化
-            if not self._initialized:
-                success = await self.initialize()
-                if not success:
-                    logging.error("Failed to initialize message handler")
-                    return
-
-            # 等待初始化完成
-            if not await self.wait_initialized():
-                logging.error("Timeout waiting for initialization")
-                return
-
-            chat = await event.get_chat()
-            channel_info = self.db.get_channel_info(chat.id)
-            
-            if not channel_info or not channel_info.get('is_active'):
-                return
-
-            # 处理交易信号
-            if event.message.text:
-                if channel_info['channel_type'] == 'MONITOR':
-                    logging.info(f"Processing signal from channel {chat.id}")
-                    
-                    # 清理已完成的任务
-                    self.cleanup_finished_tasks()
-                    
-                    # 创建新的信号处理任务
-                    task = asyncio.create_task(
-                        self.signal_processor.handle_channel_message(event)
-                    )
-                    self.signal_tasks.add(task)
-                    task.add_done_callback(lambda t: self.signal_tasks.discard(t))
-
-            # 转发消息处理
-            forward_channels = self.db.get_all_forward_channels(chat.id)
-            if not forward_channels:
-                return
-
-            for channel in forward_channels:
-                try:
-                    await self.handle_forward_message(
-                        event.message, 
-                        chat, 
-                        channel
-                    )
-                except Exception as e:
-                    logging.error(f"Error forwarding to channel {channel.get('channel_id')}: {e}")
-
-        except Exception as e:
-            logging.error(f"Error handling channel message: {e}")
-            if hasattr(e, '__dict__'):
-                logging.error(f"Error details: {e.__dict__}")
-
 
 
     async def process_signal_task(self, event):
