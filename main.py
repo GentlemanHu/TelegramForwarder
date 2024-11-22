@@ -148,12 +148,24 @@ class ForwardBot:
 
         await self.channel_manager.show_channel_management(update, context)
 
+
     async def initialize(self):
         """初始化机器人配置"""
         try:
             # 设置命令列表
             await BotCommands.setup_commands(self.application)
-            logging.info("Successfully initialized bot commands")
+            
+            # 初始化消息处理器
+            success = await self.message_handler.initialize()
+            if not success:
+                raise Exception("Failed to initialize message handler")
+            
+            # 等待消息处理器初始化完成
+            if not await self.message_handler.wait_initialized():
+                raise Exception("Message handler initialization timeout")
+                
+            logging.info("Bot initialized successfully")
+            
         except Exception as e:
             logging.error(f"Failed to initialize bot: {e}")
             raise
@@ -189,8 +201,8 @@ class ForwardBot:
             logging.error(f"Error starting bot: {e}")
             raise
         finally:
-            # 清理资源
             await self.stop()
+
 
     async def stop(self):
         """停止机器人"""

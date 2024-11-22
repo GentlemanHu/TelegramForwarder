@@ -16,17 +16,19 @@ from trade_processor import (
     TradeConfig
 )
 
+
+
 class MyMessageHandler:
-
-
     def __init__(self, db, client: TelegramClient, bot, config):
         self.db = db
         self.client = client
         self.bot = bot
         self.temp_files = {}
         self.cleanup_task = None
-        self.signal_tasks: Set[asyncio.Task] = set()  # 追踪信号处理任务
-        
+        self.signal_tasks: Set[asyncio.Task] = set()
+        self._initialized = False
+        self.sync_complete = asyncio.Event()
+
         # 初始化交易系统组件
         self.trade_config = TradeConfig(
             meta_api_token=config.META_API_TOKEN,
@@ -40,12 +42,124 @@ class MyMessageHandler:
         
         self.trade_manager = TradeManager(self.trade_config)
         self.ai_analyzer = AIAnalyzer(self.trade_config)
-        self.position_manager = PositionManager(self.trade_manager)
-        self.signal_processor = SignalProcessor(
-            self.trade_config,
-            self.ai_analyzer,
-            self.position_manager
-        )
+        self.initialized_event = asyncio.Event()
+
+    async def initialize(self):
+        """初始化所有组件"""
+        if self._initialized:
+            return True
+            
+        try:
+            # 初始化交易管理器
+            success = await self.trade_manager.initialize()
+            if not success:
+                logging.error("Failed to initialize trading manager")
+                return False
+
+            # 等待同步完成
+            sync_success = await self.trade_manager.wait_synchronized()
+            if not sync_success:
+                logging.warning("Trading system initialized but synchronization timed out")
+            else:
+                logging.info("Trading system synchronized successfully")
+
+            # 初始化 position manager
+            self.position_manager = PositionManager(self.trade_manager)
+            pos_success = await self.position_manager.initialize()
+            if not pos_success:
+                logging.error("Failed to initialize position manager")
+                return False
+
+            # 初始化 signal processor
+            self.signal_processor = SignalProcessor(
+                self.trade_config,
+                self.ai_analyzer,
+                self.position_manager
+            )
+
+            # 启动清理任务
+            await self.start_cleanup_task()
+            
+            self._initialized = True
+            self.initialized_event.set()
+            self.sync_complete.set()
+            
+            logging.info("Message handler initialized successfully")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error during initialization: {e}")
+            return False
+
+    async def wait_initialized(self, timeout: float = 300) -> bool:
+        """等待初始化完成"""
+        try:
+            await asyncio.wait_for(
+                self.initialized_event.wait(),
+                timeout=timeout
+            )
+            return True
+        except asyncio.TimeoutError:
+            logging.error("Initialization timeout")
+            return False
+
+    async def handle_channel_message(self, event):
+        """处理频道消息"""
+        try:
+            # 确保已初始化
+            if not self._initialized:
+                success = await self.initialize()
+                if not success:
+                    logging.error("Failed to initialize message handler")
+                    return
+
+            # 等待初始化完成
+            if not await self.wait_initialized():
+                logging.error("Timeout waiting for initialization")
+                return
+
+            chat = await event.get_chat()
+            channel_info = self.db.get_channel_info(chat.id)
+            
+            if not channel_info or not channel_info.get('is_active'):
+                return
+
+            # 处理交易信号
+            if event.message.text:
+                if channel_info['channel_type'] == 'MONITOR':
+                    logging.info(f"Processing signal from channel {chat.id}")
+                    
+                    # 清理已完成的任务
+                    self.cleanup_finished_tasks()
+                    
+                    # 创建新的信号处理任务
+                    task = asyncio.create_task(
+                        self.signal_processor.handle_channel_message(event)
+                    )
+                    self.signal_tasks.add(task)
+                    task.add_done_callback(lambda t: self.signal_tasks.discard(t))
+
+            # 转发消息处理
+            forward_channels = self.db.get_all_forward_channels(chat.id)
+            if not forward_channels:
+                return
+
+            for channel in forward_channels:
+                try:
+                    await self.handle_forward_message(
+                        event.message, 
+                        chat, 
+                        channel
+                    )
+                except Exception as e:
+                    logging.error(f"Error forwarding to channel {channel.get('channel_id')}: {e}")
+
+        except Exception as e:
+            logging.error(f"Error handling channel message: {e}")
+            if hasattr(e, '__dict__'):
+                logging.error(f"Error details: {e.__dict__}")
+
+
 
     async def process_signal_task(self, event):
         """单独的信号处理任务"""
@@ -69,60 +183,6 @@ class MyMessageHandler:
                 logging.error(f"Task failed with exception: {task.exception()}")
             self.signal_tasks.remove(task)
 
-    async def handle_channel_message(self, event):
-        """处理频道消息"""
-        try:
-            message = event.message
-            if not message:
-                return
-
-            chat = await event.get_chat()
-            channel_info = self.db.get_channel_info(chat.id)
-            
-            if not channel_info or not channel_info.get('is_active'):
-                return
-
-            # 处理交易信号
-            if message.text:
-                try:
-                    # 检查是否是监控频道
-                    if channel_info['channel_type'] == 'MONITOR':
-                        logging.info(f"Processing signal from channel {chat.id}")
-                        
-                        # 清理已完成的任务
-                        self.cleanup_finished_tasks()
-                        
-                        # 创建新的信号处理任务
-                        task = asyncio.create_task(self.process_signal_task(event))
-                        self.signal_tasks.add(task)
-                        
-                        # 可选：设置任务完成回调
-                        task.add_done_callback(
-                            lambda t: self.signal_tasks.discard(t)
-                        )
-                        
-                except Exception as e:
-                    logging.error(f"Error creating signal task: {e}")
-                    logging.error(traceback.format_exc())
-
-            # 转发消息处理
-            forward_channels = self.db.get_all_forward_channels(chat.id)
-            if not forward_channels:
-                return
-
-            for channel in forward_channels:
-                try:
-                    await self.handle_forward_message(message, chat, channel)
-                except Exception as e:
-                    logging.error(get_text('en', 'forward_channel_error', 
-                                         channel_id=channel.get('channel_id'), 
-                                         error=str(e)))
-                    continue
-
-        except Exception as e:
-            logging.error(get_text('en', 'message_handler_error', error=str(e)))
-            logging.error(get_text('en', 'error_details', details=traceback.format_exc()))
-
     async def cleanup(self):
         """清理资源"""
         try:
@@ -143,32 +203,6 @@ class MyMessageHandler:
             logging.error(f"Error during cleanup: {e}")
 
 
-
-
-    async def initialize(self):
-            """初始化所有组件"""
-            try:
-                # 初始化交易系统
-                success = await self.trade_manager.initialize()
-                if not success:
-                    logging.error("Failed to initialize trading system")
-                    return False
-                    
-                # 等待同步完成
-                sync_success = await self.trade_manager.wait_synchronized()
-                if not sync_success:
-                    logging.warning("Trading system initialized but synchronization timed out")
-                else:
-                    logging.info("Trading system initialized and synchronized successfully")
-                    
-                # 启动清理任务
-                await self.start_cleanup_task()
-                
-                return True
-                
-            except Exception as e:
-                logging.error(f"Error during initialization: {e}")
-                return False
 
 
 
