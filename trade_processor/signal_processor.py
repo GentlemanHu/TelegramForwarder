@@ -131,12 +131,12 @@ class SignalProcessor:
             if hasattr(e, '__dict__'):
                 logging.error(f"Error details: {e.__dict__}")
 
+
     async def _handle_modify_signal(self, signal: Dict[str, Any], round_id: str) -> bool:
         """处理修改信号"""
         try:
             logging.info(f"Starting to handle modify signal for round {round_id}")
             
-            # 验证和获取必要的状态
             if not self.position_manager.trade_manager._initialized:
                 await self.position_manager.trade_manager.initialize()
                 
@@ -145,7 +145,7 @@ class SignalProcessor:
                 logging.error("Terminal state not available")
                 return False
             
-            # 获取round信息，使用round特定的锁
+            # 获取round信息
             async with self.round_lock:
                 trade_round = self.position_manager.round_manager.rounds.get(round_id)
                 if not trade_round:
@@ -168,33 +168,50 @@ class SignalProcessor:
                 except Exception as e:
                     logging.error(f"Error checking position {pos_id}: {e}")
 
-            # 更新仓位，每个仓位独立处理
+            # 更新仓位，合并 stop_loss 和 take_profit 的更新
             update_tasks = []
             for pos in active_positions:
-                if signal.get('stop_loss'):
-                    update_tasks.append(
-                        self.position_manager.trade_manager.connection.modify_position(
-                            position_id=pos.id,
-                            stop_loss=signal['stop_loss']
-                        )
-                    )
+                # 同时设置stop_loss和take_profit
+                try:
+                    params = {}
+                    if signal.get('stop_loss') is not None:
+                        params['stop_loss'] = signal['stop_loss']
+                        logging.info(f"Will update stop loss to {signal['stop_loss']} for position {pos.id}")
                     
-                if signal.get('take_profits'):
-                    update_tasks.append(
-                        self.position_manager.trade_manager.connection.modify_position(
-                            position_id=pos.id,
-                            take_profit=signal['take_profits'][0]
+                    if signal.get('take_profits'):
+                        params['take_profit'] = signal['take_profits'][0]
+                        logging.info(f"Will update take profit to {signal['take_profits'][0]} for position {pos.id}")
+                    
+                    if params:  # 只有当有参数需要更新时才添加任务
+                        update_tasks.append(
+                            self.position_manager.trade_manager.connection.modify_position(
+                                position_id=pos.id,
+                                **params
+                            )
                         )
-                    )
+                except Exception as e:
+                    logging.error(f"Error preparing update for position {pos.id}: {e}")
 
             # 并行执行所有更新
             if update_tasks:
-                await asyncio.gather(*update_tasks, return_exceptions=True)
+                try:
+                    results = await asyncio.gather(*update_tasks, return_exceptions=True)
+                    for idx, result in enumerate(results):
+                        if isinstance(result, Exception):
+                            logging.error(f"Error in update task {idx}: {str(result)}")
+                        else:
+                            logging.info(f"Update task {idx} completed successfully")
+                except Exception as e:
+                    logging.error(f"Error executing update tasks: {e}")
+            else:
+                logging.warning("No position updates required")
 
             # 更新round配置
             async with self.round_lock:
-                trade_round.stop_loss = signal.get('stop_loss')
-                trade_round.tp_levels = [TPLevel(price=tp) for tp in signal.get('take_profits', [])]
+                if signal.get('stop_loss') is not None:
+                    trade_round.stop_loss = signal['stop_loss']
+                if signal.get('take_profits'):
+                    trade_round.tp_levels = [TPLevel(price=tp) for tp in signal['take_profits']]
                 
                 # 如果需要创建新layers
                 if (signal.get('entry_range') and 
@@ -206,14 +223,17 @@ class SignalProcessor:
                         layer_config['count'] = len(signal['take_profits'])
                         layer_config['distribution'] = 'equal'
                     
+                    config_for_layers = {
+                        'entry_range': signal['entry_range'],
+                        'layers': layer_config,
+                        'stop_loss': signal['stop_loss'],
+                        'take_profits': signal['take_profits']
+                    }
+                    
+                    logging.info(f"Creating additional layers with config: {config_for_layers}")
                     await self.position_manager.round_manager._create_additional_layers(
                         trade_round, 
-                        {
-                            'entry_range': signal['entry_range'],
-                            'layers': layer_config,
-                            'stop_loss': signal['stop_loss'],
-                            'take_profits': signal['take_profits']
-                        }
+                        config_for_layers
                     )
 
             logging.info(f"Successfully updated round {round_id}")
