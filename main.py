@@ -25,7 +25,8 @@ from telegram.ext import (
 from locales import get_text
 
 class ForwardBot:
-    def __init__(self, config):
+    def __init__(self, config, trade_manager=None, position_manager=None, 
+                 signal_processor=None, ai_analyzer=None):
         self.config = config
         self.db = Database(config.DATABASE_NAME)
         
@@ -39,15 +40,83 @@ class ForwardBot:
             config.API_HASH
         )
         
-        # Initialize message handler first
-        self.message_handler = MyMessageHandler(self.db, self.client, self.application.bot, self.config)
+        # 使用传入的组件或创建新的
+        self.trade_manager = trade_manager
+        self.position_manager = position_manager
+        self.signal_processor = signal_processor
+        self.ai_analyzer = ai_analyzer
         
-        # Initialize other components that depend on message handler
+        # Initialize message handler
+        self.message_handler = MyMessageHandler(
+            self.db, 
+            self.client,
+            self.application.bot,
+            self.config,
+            trade_manager=self.trade_manager,
+            position_manager=self.position_manager,
+            signal_processor=self.signal_processor,
+            ai_analyzer=self.ai_analyzer
+        )
+        
+        # Initialize channel manager
         self.channel_manager = ChannelManager(self.db, config, self.client)
         
         # Setup handlers
         self.setup_handlers()
 
+    async def initialize(self):
+        """Initialize bot components"""
+        try:
+            # Set up commands
+            await BotCommands.setup_commands(self.application)
+            logging.info("Bot commands initialized successfully")
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error initializing bot: {e}")
+            return False
+
+    async def start(self):
+        """Start the bot"""
+        try:
+            # Initialize bot
+            await self.initialize()
+            
+            # Start Telethon client
+            await self.client.start(phone=self.config.PHONE_NUMBER)
+            
+            # Register message handler
+            @self.client.on(events.NewMessage)
+            async def handle_new_message(event):
+                await self.message_handler.handle_channel_message(event)
+            
+            # Start bot
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling()
+            
+            print("Bot started successfully!")
+            
+            # Keep running
+            await self.client.run_until_disconnected()
+            
+        except Exception as e:
+            logging.error(f"Error starting bot: {e}")
+            raise
+        finally:
+            await self.stop()
+
+    async def stop(self):
+        """Stop the bot"""
+        try:
+            if self.message_handler:
+                await self.message_handler.cleanup()
+            await self.application.stop()
+            await self.client.disconnect()
+            self.db.cleanup()
+        except Exception as e:
+            logging.error(f"Error stopping bot: {e}")
     def setup_handlers(self):
         """设置消息处理器"""
         # 命令处理器
@@ -149,77 +218,6 @@ class ForwardBot:
             return
 
         await self.channel_manager.show_channel_management(update, context)
-
-
-
-
-    async def initialize(self):
-        """初始化机器人配置"""
-        try:
-            # 设置命令列表
-            await BotCommands.setup_commands(self.application)
-            
-            # 初始化消息处理器
-            success = await self.message_handler.initialize()
-            if not success:
-                raise Exception("Failed to initialize message handler")
-
-            # 等待消息处理器完全初始化
-            await self.message_handler.initialized_event.wait()
-            
-            logging.info("Bot initialized successfully")
-            
-        except Exception as e:
-            logging.error(f"Failed to initialize bot: {e}")
-            raise
-
-    async def start(self):
-        """启动机器人"""
-        try:
-            # 初始化配置
-            await self.initialize()
-            
-            # 启动 Telethon 客户端
-            await self.client.start(phone=self.config.PHONE_NUMBER)
-            
-            # 注册消息处理器
-            @self.client.on(events.NewMessage)
-            async def handle_new_message(event):
-                await self.message_handler.handle_channel_message(event)
-            
-            # 启动机器人
-            await self.application.initialize()
-            await self.application.start()
-            await self.application.updater.start_polling()
-            
-            print("Bot started successfully!")
-            
-            # 保持运行
-            await self.client.run_until_disconnected()
-            
-        except Exception as e:
-            logging.error(f"Error starting bot: {e}")
-            raise
-        finally:
-            await self.stop()
-
-
-    async def stop(self):
-        """停止机器人"""
-        try:
-            if self.message_handler.cleanup_task:
-                self.message_handler.cleanup_task.cancel()
-            
-            # 清理所有剩余的临时文件
-            for file_path in list(self.message_handler.temp_files.keys()):
-                await self.message_handler.cleanup_file(file_path)
-                
-            await self.application.stop()
-            await self.client.disconnect()
-            self.db.cleanup()
-            print("Bot stopped successfully!")
-        except Exception as e:
-            logging.error(f"Error stopping bot: {e}")
 
 # main.py (部分更新)
 

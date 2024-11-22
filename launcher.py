@@ -1,3 +1,4 @@
+# launcher.py
 import argparse
 import asyncio
 import logging
@@ -11,6 +12,7 @@ from trade_processor.position_manager import PositionManager
 from trade_processor.signal_processor import SignalProcessor
 from trade_processor.trade_config import TradeConfig
 from trade_processor.trade_manager import TradeManager
+
 
 class SimulatedEvent:
     def __init__(self, message_text: str, channel_id: str):
@@ -30,54 +32,52 @@ class SimulatedChat:
         self.id = int(channel_id)
         self.title = "Simulated Channel"
 
+
+
 class AsyncBotLauncher:
     def __init__(self):
         self.config = Config()
+        self.trade_config = TradeConfig(meta_api_token=self.config.META_API_TOKEN,account_id=self.config.ACCOUNT_ID,openai_api_key=self.config.OPENAI_API_KEY)
         self.initialized = False
-        self.trade_config = None
         self.trade_manager = None
-        self.ai_analyzer = None
         self.position_manager = None
         self.signal_processor = None
+        self.ai_analyzer = None
+        self._bot = None
+
+    async def get_trade_manager(self) -> TradeManager:
+        """获取或创建 TradeManager 单例"""
+        if not self.trade_manager:
+            self.trade_manager = TradeManager(self.trade_config)
+            await self.trade_manager.initialize()
+            await self.trade_manager.wait_synchronized()
+        return self.trade_manager
 
     async def initialize_components(self):
         """Initialize all trading components"""
         if self.initialized:
-            return
+            return True
 
         try:
             # Initialize trading system components
-            self.trade_config = TradeConfig(
-                meta_api_token=self.config.META_API_TOKEN,
-                account_id=self.config.ACCOUNT_ID,
-                openai_api_key=self.config.OPENAI_API_KEY,
-                openai_base_url=self.config.OPENAI_BASE_URL,
-                default_risk_percent=self.config.DEFAULT_RISK_PERCENT,
-                max_layers=self.config.MAX_LAYERS,
-                min_lot_size=self.config.MIN_LOT_SIZE
-            )
-            self.trade_manager = TradeManager(self.trade_config)
-            self.ai_analyzer = AIAnalyzer(self.trade_config)
-            self.position_manager = PositionManager(self.trade_manager)
-            self.signal_processor = SignalProcessor(
-                self.trade_config,
-                self.ai_analyzer,
-                self.position_manager
-            )
-            # Initialize trading system
-            success = await self.trade_manager.initialize()
-            if not success:
-                logging.error("Failed to initialize trading system")
-                return False
-
-            # Wait for synchronization
-            sync_success = await self.trade_manager.wait_synchronized()
-            if not sync_success:
-                logging.warning("Trading system initialized but synchronization timed out")
-            else:
-                logging.info("Trading system initialized and synchronized successfully")
+            self.trade_manager = await self.get_trade_manager()
+            
+            if not self.ai_analyzer:
+                self.ai_analyzer = AIAnalyzer(self.trade_config)
+            
+            if not self.position_manager:
+                self.position_manager = PositionManager(self.trade_manager)
+                await self.position_manager.initialize()
+            
+            if not self.signal_processor:
+                self.signal_processor = SignalProcessor(
+                    self.trade_config,
+                    self.ai_analyzer,
+                    self.position_manager
+                )
 
             self.initialized = True
+            logging.info("Trading components initialized successfully")
             return True
 
         except Exception as e:
@@ -121,14 +121,28 @@ class AsyncBotLauncher:
         """Serve the index.html page"""
         return web.FileResponse('index.html')
 
+
     async def run_telegram_mode(self):
         """Run in Telegram mode"""
         if not await self.initialize_components():
             logging.error("Failed to initialize components for Telegram mode")
             return
 
-        bot = ForwardBot(self.config)
-        await bot.start()
+        try:
+            if not self._bot:
+                # 创建 bot 实例时传入已初始化的组件
+                self._bot = ForwardBot(
+                    config=self.config,
+                    trade_manager=self.trade_manager,
+                    position_manager=self.position_manager,
+                    signal_processor=self.signal_processor,
+                    ai_analyzer=self.ai_analyzer
+                )
+            
+            await self._bot.start()
+            
+        except Exception as e:
+            logging.error(f"Error in Telegram mode: {e}")
 
     async def run_ui_mode(self):
         """Run in UI mode with async web server"""
@@ -156,6 +170,18 @@ class AsyncBotLauncher:
         except asyncio.CancelledError:
             await runner.cleanup()
 
+    async def stop(self):
+        """Stop all components"""
+        try:
+            if self.position_manager:
+                await self.position_manager.cleanup()
+            if self.trade_manager:
+                await self.trade_manager.cleanup()
+            if self._bot:
+                await self._bot.stop()
+        except Exception as e:
+            logging.error(f"Error stopping components: {e}")
+
 async def main():
     parser = argparse.ArgumentParser(description='Trading Bot Launcher')
     parser.add_argument('--mode', 
@@ -174,6 +200,8 @@ async def main():
     except Exception as e:
         logging.error(f"Fatal error: {e}")
         raise
+    finally:
+        await launcher.stop()
 
 if __name__ == "__main__":
     logging.basicConfig(

@@ -47,7 +47,7 @@ class TradeSynchronizationListener(SynchronizationListener):
                     for listener in self.trade_manager._price_listeners[symbol]:
                         await listener(price)
         except Exception as e:
-            logging.error(f"Error handling price update: {e}")
+            logging.error(f"-----Error handling price update: {e}----trademanager")
 
     async def on_account_information_updated(
         self,
@@ -473,7 +473,7 @@ class TradeManager:
             for listener in self._price_listeners.values():
                 await listener(symbol, price_data)
         except Exception as e:
-            logging.error(f"Error handling price update: {e}")
+            logging.error(f"---trade_manager---hande_price_update---Error handling price update: {e}")
 
 
     async def cancel_order(self, order_id: str) -> bool:

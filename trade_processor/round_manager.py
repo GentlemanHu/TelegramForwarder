@@ -147,14 +147,7 @@ class RoundManager:
         except Exception as e:
             logging.error(f"Error handling order completion: {e}")
 
-    async def on_symbol_specifications_updated(
-        self, 
-        instance_index: str,
-        specifications: List[Dict],
-        removed_symbols: List[str]
-    ):
-        """Called when symbol specifications updated"""
-        pass
+
 
     async def on_symbol_price_updated(
         self,
@@ -168,17 +161,45 @@ class RoundManager:
     ):
         """Called when symbol prices updated"""
         try:
-            for price in prices:
-                symbol = price.get('symbol')
-                if symbol in self._price_listeners:
-                    for listener in self._price_listeners[symbol]:
-                        await listener(price)
+            pass
+            # logging.info(f"prices---{prices}")
+            #TODO -- update
+            # for price in prices:
+            #     symbol = price.get('symbol')
+            #     if symbol in self._price_listeners:
+            #         for listener in self._price_listeners[symbol]:
+            #             await listener(price)
         except Exception as e:
-            logging.error(f"Error handling price update: {e}")
+            logging.error(f"-----roundmanager___on_symbol_price_updated__Error handling price update: {e}")
 
 
+    async def on_symbol_specifications_updated(
+        self, 
+        instance_index: str,
+        specifications: List[Dict],
+        removed_symbols: List[str]
+    ):
+        """Called when symbol specifications updated"""
+        pass
 
 
+    async def on_symbol_specification_updated(
+        self,
+        instance_index: str,
+        specification: Dict[str, Any]
+    ):
+        """Called when symbol specification updated"""
+        try:
+            symbol = specification.get('symbol')
+            if symbol in self._price_listeners:
+                for listener in self._price_listeners[symbol]:
+                    await listener({
+                        'type': 'specification',
+                        'symbol': symbol,
+                        'specification': specification
+                    })
+        except Exception as e:
+            logging.error(f"Error in symbol specification update: {e}")
 
     async def on_symbol_prices_updated(
         self,
@@ -190,37 +211,78 @@ class RoundManager:
         margin_level: Optional[float] = None,
         account_currency_exchange_rate: Optional[float] = None
     ):
-        """Called when symbol prices updated"""
+        """处理价格更新"""
         try:
             for price_data in prices:
-                if not isinstance(price_data, dict):
-                    continue
-                    
-                symbol = price_data.get('symbol')
-                if not symbol:
-                    continue
+                if isinstance(price_data, dict):
+                    symbol = price_data.get('symbol')
+                    if symbol and symbol in self._price_listeners:
+                        sanitized_price = {
+                            'symbol': symbol,
+                            'bid': float(price_data.get('bid', 0)),
+                            'ask': float(price_data.get('ask', 0)),
+                            'time': price_data.get('time', datetime.now().isoformat()),
+                            'brokerTime': price_data.get('brokerTime', ''),
+                            'profitTickValue': float(price_data.get('profitTickValue', 0)),
+                            'lossTickValue': float(price_data.get('lossTickValue', 0)),
+                            'equity': equity,
+                            'margin': margin,
+                            'freeMargin': free_margin,
+                            'marginLevel': margin_level
+                        }
+                        
+                        for listener in self._price_listeners[symbol]:
+                            try:
+                                await listener(sanitized_price)
+                            except Exception as e:
+                                logging.error(f"Error in price listener: {e}")
+                                
+        except Exception as e:
+            logging.error(f"----on_symbol_prices_updated---round_manager---Error handling price updates: {e}")
 
-                if symbol in self._price_listeners:
-                    sanitized_price = {
+    async def on_candles_updated(
+        self,
+        instance_index: str,
+        symbol: str,
+        timeframe: str,
+        candles: List[Dict],
+        equity: Optional[float] = None,
+        margin: Optional[float] = None,
+        free_margin: Optional[float] = None,
+        margin_level: Optional[float] = None,
+        account_currency_exchange_rate: Optional[float] = None
+    ):
+        """处理K线数据更新"""
+        try:
+            if not isinstance(candles, list):
+                candles = [candles]
+
+            for candle in candles:
+                if isinstance(candle, dict):
+                    sanitized_candle = {
                         'symbol': symbol,
-                        'bid': price_data.get('bid', 0),
-                        'ask': price_data.get('ask', 0),
-                        'time': price_data.get('time'),
-                        'brokerTime': price_data.get('brokerTime'),
-                        'equity': equity,
-                        'margin': margin,
-                        'freeMargin': free_margin,
-                        'marginLevel': margin_level
+                        'timeframe': timeframe,
+                        'time': candle.get('time', datetime.now().isoformat()),
+                        'brokerTime': candle.get('brokerTime', ''),
+                        'open': float(candle.get('open', 0)),
+                        'high': float(candle.get('high', 0)),
+                        'low': float(candle.get('low', 0)),
+                        'close': float(candle.get('close', 0)),
+                        'tickVolume': float(candle.get('tickVolume', 0)),
+                        'spread': float(candle.get('spread', 0)),
+                        'volume': float(candle.get('volume', 0))
                     }
                     
-                    for listener in self._price_listeners[symbol]:
-                        try:
-                            await listener(sanitized_price)
-                        except Exception as listener_error:
-                            logging.error(f"Error in price listener for {symbol}: {listener_error}")
-                            
+                    if symbol in self._price_listeners:
+                        for listener in self._price_listeners[symbol]:
+                            try:
+                                await listener(sanitized_candle)
+                            except Exception as e:
+                                logging.error(f"Error in candle listener: {e}")
         except Exception as e:
-            logging.error(f"Error handling price updates: {e}")
+            logging.error(f"Error handling candles update: {e}")
+
+
 
     async def on_books_updated(
         self,
@@ -311,7 +373,7 @@ class RoundManager:
                     await self._update_round_status(trade_round)
 
         except Exception as e:
-            logging.error(f"Error handling price update for {symbol}: {e}")
+            logging.error(f"___handle_price_update__round_manager__Error handling price update for {symbol}: {e}")
 
 
 
@@ -329,6 +391,22 @@ class RoundManager:
         synchronization_id: str
     ):
         """Called when deals synchronized"""
+        pass
+
+    async def on_history_order_added(
+        self,
+        instance_index,
+        order
+    ):
+        """Called when hi add started"""
+        pass
+
+
+    async def on_deal_added(
+        self,
+        instance_index,
+        deal
+    ):
         pass
 
     async def on_synchronization_started(
@@ -483,52 +561,6 @@ class RoundManager:
             logging.error(f"Error updating positions take profit: {e}")
 
 
-
-    async def on_candles_updated(
-        self,
-        instance_index: str,
-        symbol: str,
-        timeframe: str,
-        candles: List[Dict],
-        equity: Optional[float] = None,
-        margin: Optional[float] = None,
-        free_margin: Optional[float] = None,
-        margin_level: Optional[float] = None,
-        account_currency_exchange_rate: Optional[float] = None
-    ):
-        """Called when candles updated"""
-        try:
-            if not isinstance(candles, list):
-                candles = [candles]
-
-            # 处理每个K线数据
-            for candle in candles:
-                try:
-                    sanitized_candle = {
-                        'symbol': symbol,
-                        'timeframe': timeframe,
-                        'time': candle.get('time'),
-                        'open': candle.get('open'),
-                        'high': candle.get('high'),
-                        'low': candle.get('low'),
-                        'close': candle.get('close'),
-                        'volume': candle.get('tickVolume'),
-                        'spread': candle.get('spread')
-                    }
-                    
-                    # 通知价格监听器
-                    if symbol in self._price_listeners:
-                        for listener in self._price_listeners[symbol]:
-                            try:
-                                await listener(sanitized_candle)
-                            except Exception as e:
-                                logging.error(f"Error in candle listener for {symbol}: {e}")
-                                
-                except Exception as e:
-                    logging.error(f"Error processing individual candle: {e}")
-                    
-        except Exception as e:
-            logging.error(f"Error handling candles update: {e}")
 
     async def update_round_config(self, round_id: str, config: Dict[str, Any]) -> bool:
         """更新round配置"""

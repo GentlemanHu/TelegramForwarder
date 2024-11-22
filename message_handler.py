@@ -18,119 +18,64 @@ from trade_processor import (
 
 
 class StandardizedEvent:
+    """标准化的事件对象"""
     def __init__(self, message, chat=None):
         self.message = message
         self._chat = chat
         
     @property
     def text(self) -> str:
+        """获取消息文本"""
         if hasattr(self.message, 'text'):
             return self.message.text
         return str(self.message)
 
     async def get_chat(self):
+        """获取聊天对象"""
         return self._chat
 
     @classmethod
     async def from_telegram_event(cls, event):
+        """从Telegram事件创建标准化事件"""
         chat = await event.get_chat()
         return cls(event.message, chat)
 
-
-
 class MyMessageHandler:
-
-    def __init__(self, db, client: TelegramClient, bot, config):
+    def __init__(self, db, client: TelegramClient, bot, config, 
+                 trade_manager=None, position_manager=None, 
+                 signal_processor=None, ai_analyzer=None):
+        """初始化消息处理器
+        
+        Args:
+            db: 数据库实例
+            client: Telethon客户端
+            bot: Telegram bot
+            config: 配置对象
+            trade_manager: 可选，已初始化的TradeManager实例
+            position_manager: 可选，已初始化的PositionManager实例
+            signal_processor: 可选，已初始化的SignalProcessor实例
+            ai_analyzer: 可选，已初始化的AIAnalyzer实例
+        """
         self.db = db
         self.client = client
         self.bot = bot
+        self.config = config
         self.temp_files = {}
         self.cleanup_task = None
         self.signal_tasks: Set[asyncio.Task] = set()
-        self._initialized = False
-        self.sync_complete = asyncio.Event()
-        self.initialized_event = asyncio.Event()
-        
-        # 初始化交易系统组件
-        self.trade_config = TradeConfig(
-            meta_api_token=config.META_API_TOKEN,
-            account_id=config.ACCOUNT_ID,
-            openai_api_key=config.OPENAI_API_KEY,
-            openai_base_url=config.OPENAI_BASE_URL,
-            default_risk_percent=config.DEFAULT_RISK_PERCENT,
-            max_layers=config.MAX_LAYERS,
-            min_lot_size=config.MIN_LOT_SIZE
-        )
-        
-        # 在这里只创建实例，不进行初始化
-        self.trade_manager = None
-        self.position_manager = None
-        self.signal_processor = None
-        self.ai_analyzer = None
 
-    async def initialize(self) -> bool:
-        """初始化所有组件"""
-        if self._initialized:
-            return True
-            
-        try:
-            # 初始化 AI 分析器
-            self.ai_analyzer = AIAnalyzer(self.trade_config)
-            
-            # 初始化交易管理器
-            self.trade_manager = TradeManager(self.trade_config)
-            success = await self.trade_manager.initialize()
-            if not success:
-                logging.error("Failed to initialize trading manager")
-                return False
+        # 使用已初始化的组件或设置为None
+        self.trade_manager = trade_manager
+        self.position_manager = position_manager
+        self.signal_processor = signal_processor
+        self.ai_analyzer = ai_analyzer
 
-            # 等待同步完成
-            sync_success = await self.trade_manager.wait_synchronized()
-            if not sync_success:
-                logging.warning("Trading system initialized but synchronization timed out")
-            else:
-                logging.info("Trading system synchronized successfully")
-
-            # 初始化 position manager
-            self.position_manager = PositionManager(self.trade_manager)
-            pos_success = await self.position_manager.initialize()
-            if not pos_success:
-                logging.error("Failed to initialize position manager")
-                return False
-
-            # 初始化 signal processor
-            self.signal_processor = SignalProcessor(
-                self.trade_config,
-                self.ai_analyzer,
-                self.position_manager
-            )
-
-            # 启动清理任务
-            await self.start_cleanup_task()
-            
-            self._initialized = True
-            self.sync_complete.set()
-            self.initialized_event.set()
-            
-            logging.info("Message handler initialized successfully")
-            return True
-            
-        except Exception as e:
-            logging.error(f"Error during initialization: {e}")
-            return False
-
-
+        # 用于文件清理的锁
+        self._cleanup_lock = asyncio.Lock()
 
     async def handle_channel_message(self, event):
         """处理频道消息"""
         try:
-            # 确保已初始化
-            if not self._initialized:
-                success = await self.initialize()
-                if not success:
-                    logging.error("Failed to initialize message handler")
-                    return
-
             # 创建标准化事件
             std_event = await StandardizedEvent.from_telegram_event(event)
             chat = await std_event.get_chat()
@@ -140,21 +85,20 @@ class MyMessageHandler:
                 return
 
             # 处理交易信号
-            if std_event.text:
-                if channel_info['channel_type'] == 'MONITOR':
-                    logging.info(f"Processing signal from channel {chat.id}")
-                    
-                    # 清理已完成的任务
-                    self.cleanup_finished_tasks()
-                    
-                    # 创建新的信号处理任务
-                    task = asyncio.create_task(
-                        self.signal_processor.handle_channel_message(std_event)
-                    )
-                    self.signal_tasks.add(task)
-                    task.add_done_callback(lambda t: self.signal_tasks.discard(t))
+            if std_event.text and channel_info['channel_type'] == 'MONITOR':
+                logging.info(f"Processing signal from channel {chat.id}")
+                
+                # 清理已完成的任务
+                self.cleanup_finished_tasks()
+                
+                # 创建新的信号处理任务
+                task = asyncio.create_task(
+                    self.signal_processor.handle_channel_message(std_event)
+                )
+                self.signal_tasks.add(task)
+                task.add_done_callback(lambda t: self.signal_tasks.discard(t))
 
-            # 转发消息处理
+            # 处理转发消息
             forward_channels = self.db.get_all_forward_channels(chat.id)
             if forward_channels:
                 for channel in forward_channels:
@@ -171,6 +115,149 @@ class MyMessageHandler:
             logging.error(f"Error handling channel message: {e}")
             if hasattr(e, '__dict__'):
                 logging.error(f"Error details: {e.__dict__}")
+
+    def cleanup_finished_tasks(self):
+        """清理已完成的任务"""
+        done_tasks = {task for task in self.signal_tasks if task.done()}
+        for task in done_tasks:
+            if task.exception():
+                logging.error(f"Task failed with exception: {task.exception()}")
+            self.signal_tasks.remove(task)
+
+    async def handle_forward_message(self, message, from_chat, to_channel):
+        """处理消息转发"""
+        try:
+            if not message or not from_chat or not to_channel:
+                logging.error("Missing parameters for message forwarding")
+                return
+
+            channel_id = to_channel.get('channel_id')
+            channel_id = int(f"-100{channel_id}")
+
+            # 尝试直接转发
+            try:
+                await self.bot.forward_message(
+                    chat_id=channel_id,
+                    from_chat_id=from_chat.id,
+                    message_id=message.id
+                )
+                logging.info(f"Successfully forwarded message to channel {channel_id}")
+                return
+            except Exception as e:
+                logging.warning(f"Direct forward failed, trying alternative method: {e}")
+
+            # 处理媒体消息
+            if message.media:
+                await self.handle_media_forward(message, from_chat, channel_id)
+            # 处理文本消息
+            elif message.text:
+                await self.handle_text_forward(message, from_chat, channel_id)
+
+        except Exception as e:
+            logging.error(f"Error in handle_forward_message: {e}")
+
+    async def handle_media_forward(self, message, from_chat, channel_id):
+        """处理媒体消息转发"""
+        try:
+            media_type = self.get_media_type(message)
+            if not media_type:
+                return
+
+            await self.handle_media_send(
+                message=message,
+                channel_id=channel_id,
+                from_chat=from_chat,
+                media_type=media_type
+            )
+
+        except Exception as e:
+            logging.error(f"Error handling media forward: {e}")
+
+    def get_media_type(self, message):
+        """获取媒体类型"""
+        if hasattr(message, 'photo') and message.photo:
+            return 'photo'
+        elif hasattr(message, 'video') and message.video:
+            return 'video'
+        elif hasattr(message, 'document') and message.document:
+            return 'document'
+        return None
+
+    async def cleanup_file(self, file_path: str):
+        """清理单个文件"""
+        async with self._cleanup_lock:
+            try:
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                    self.temp_files.pop(file_path, None)
+                    logging.info(f"Cleaned up file: {file_path}")
+            except Exception as e:
+                logging.error(f"Error cleaning up file {file_path}: {e}")
+
+    async def start_cleanup_task(self):
+        """启动清理任务"""
+        if self.cleanup_task is None:
+            self.cleanup_task = asyncio.create_task(self._cleanup_old_files())
+
+    async def _cleanup_old_files(self):
+        """定期清理过期的临时文件"""
+        while True:
+            try:
+                current_time = datetime.now()
+                async with self._cleanup_lock:
+                    files_to_remove = [
+                        file_path
+                        for file_path, timestamp in self.temp_files.items()
+                        if current_time - timestamp > timedelta(hours=1)
+                    ]
+                    
+                    for file_path in files_to_remove:
+                        await self.cleanup_file(file_path)
+
+            except Exception as e:
+                logging.error(f"Error in cleanup task: {e}")
+            
+            await asyncio.sleep(3600)  # 每小时运行一次
+
+    async def cleanup(self):
+        """清理资源"""
+        try:
+            # 取消清理任务
+            if self.cleanup_task:
+                self.cleanup_task.cancel()
+                
+            # 清理所有临时文件
+            async with self._cleanup_lock:
+                for file_path in list(self.temp_files.keys()):
+                    await self.cleanup_file(file_path)
+                    
+            # 等待所有信号处理任务完成
+            if self.signal_tasks:
+                await asyncio.gather(*self.signal_tasks, return_exceptions=True)
+                
+        except Exception as e:
+            logging.error(f"Error during cleanup: {e}")
+
+
+    async def initialize(self) -> bool:
+        """初始化所有组件"""
+        if self._initialized:
+            return True
+            
+        try:
+            # 启动清理任务
+            await self.start_cleanup_task()
+            
+            self._initialized = True
+            self.sync_complete.set()
+            self.initialized_event.set()
+            
+            logging.info("Message handler initialized successfully")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error during initialization: {e}")
+            return False
 
 
     async def wait_initialized(self, timeout: float = 300) -> bool:
@@ -198,37 +285,6 @@ class MyMessageHandler:
             for task in self.signal_tasks:
                 if task.done():
                     self.signal_tasks.remove(task)
-
-    def cleanup_finished_tasks(self):
-        """清理已完成的任务"""
-        done_tasks = {task for task in self.signal_tasks if task.done()}
-        for task in done_tasks:
-            # 检查任务是否有异常
-            if task.exception():
-                logging.error(f"Task failed with exception: {task.exception()}")
-            self.signal_tasks.remove(task)
-
-    async def cleanup(self):
-        """清理资源"""
-        try:
-            # 等待所有信号处理任务完成
-            if self.signal_tasks:
-                await asyncio.gather(*self.signal_tasks, return_exceptions=True)
-            
-            # 清理交易系统
-            await self.trade_manager.cleanup()
-            
-            # 清理临时文件
-            if self.cleanup_task:
-                self.cleanup_task.cancel()
-            for file_path in list(self.temp_files.keys()):
-                await self.cleanup_file(file_path)
-                
-        except Exception as e:
-            logging.error(f"Error during cleanup: {e}")
-
-
-
 
 
     async def handle_media_send(self, message, channel_id, from_chat, media_type: str):
@@ -326,65 +382,6 @@ class MyMessageHandler:
             return chat._type
         return 'private_channel'
 
-    async def handle_forward_message(self, message, from_chat, to_channel):
-        """处理消息转发"""
-        if not message or not from_chat or not to_channel:
-            logging.error(get_text('en', 'missing_parameters'))
-            return
-
-        try:
-            channel_id = to_channel.get('channel_id')
-            channel_id = int(f"-100{channel_id}")
-            if not channel_id:
-                logging.error(get_text('en', 'invalid_channel_id'))
-                return
-
-            # 尝试直接转发
-            try:
-                await self.bot.forward_message(
-                    chat_id=channel_id,
-                    from_chat_id=from_chat.id,
-                    message_id=message.id
-                )
-                logging.info(get_text('en', 'forward_success', channel_id=channel_id))
-                return
-            except Exception as e:
-                logging.warning(get_text('en', 'direct_forward_failed', error=str(e)))
-
-            # 处理媒体消息
-            if message.media:
-                if hasattr(message, 'photo') and message.photo:
-                    await self.handle_media_send(message, channel_id, from_chat, 'photo')
-                elif hasattr(message, 'video') and message.video:
-                    await self.handle_media_send(message, channel_id, from_chat, 'video')
-                elif hasattr(message, 'document') and message.document:
-                    await self.handle_media_send(message, channel_id, from_chat, 'document')
-            # 处理文本消息
-            elif message.text:
-                forward_title = await self._build_forward_title(from_chat, message)
-                await self.bot.send_message(
-                    chat_id=channel_id,
-                    text=forward_title,
-                    disable_web_page_preview=True
-                )
-                logging.info(get_text('en', 'text_send_success', channel_id=channel_id))
-
-        except Exception as e:
-            logging.error(get_text('en', 'forward_message_error', error=str(e)))
-            raise
-
-    async def cleanup_file(self, file_path: str):
-        """清理单个文件"""
-        try:
-            if file_path and os.path.exists(file_path):
-                os.remove(file_path)
-                self.temp_files.pop(file_path, None)
-                logging.info(get_text('en', 'file_cleanup_success', file_path=file_path))
-        except Exception as e:
-            logging.error(get_text('en', 'file_cleanup_error', 
-                                 file_path=file_path, 
-                                 error=str(e)))
-
     async def cleanup_old_files(self):
         """定期清理过期的临时文件"""
         while True:
@@ -404,11 +401,6 @@ class MyMessageHandler:
                 logging.error(get_text('en', 'cleanup_task_error', error=str(e)))
             
             await asyncio.sleep(3600)  # 每小时运行一次
-
-    async def start_cleanup_task(self):
-        """启动清理任务"""
-        if self.cleanup_task is None:
-            self.cleanup_task = asyncio.create_task(self.cleanup_old_files())
 
     async def download_progress_callback(self, current, total):
         """下载进度回调"""
