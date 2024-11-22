@@ -7,3 +7,4 @@ pylint
 aiosqlite
 metaapi-cloud-sdk
 openai
+numpy
