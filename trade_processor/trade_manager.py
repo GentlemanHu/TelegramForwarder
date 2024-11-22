@@ -173,160 +173,7 @@ class TradeManager:
         self._subscribed_symbols = set()
         self.active_streams = {}  # 新增：跟踪活跃的流订阅
 
-    async def subscribe_to_market_data(self, symbol: str):
-        """订阅市场数据"""
-        try:
-            if not self._initialized:
-                await self.initialize()
-
-            if symbol in self._subscribed_symbols:
-                return
-
-            if self.connection:
-                # 简化订阅，只订阅quotes
-                await self.connection.subscribe_to_market_data(
-                    symbol,
-                    [{'type': 'quotes'}]
-                )
-                self._subscribed_symbols.add(symbol)
-                
-                # 设置流式订阅
-                if symbol not in self.active_streams:
-                    self.active_streams[symbol] = {
-                        'quotes': True,
-                        'last_price': None,
-                        'last_update': None
-                    }
-                
-                logging.info(f"Subscribed to market data for {symbol}")
-            else:
-                logging.error("Connection not available")
-
-        except Exception as e:
-            logging.error(f"Error subscribing to market data for {symbol}: {e}")
-            if hasattr(e, '__dict__'):
-                logging.error(f"Error details: {e.__dict__}")
-
-    def generate_order_id(self, symbol: str) -> str:
-        """生成订单ID"""
-        timestamp = int(datetime.now().timestamp() * 1000)
-        short_id = str(timestamp)[-6:]  # 取最后6位
-        return f"T_{symbol}_{short_id}"
-
-    async def place_order(
-        self,
-        symbol: str,
-        direction: str,
-        volume: float,
-        entry_type: str = 'market',
-        entry_price: Optional[float] = None,
-        stop_loss: Optional[float] = None,
-        take_profits: Optional[List[float]] = None,
-        trailing_stop: Optional[Dict] = None,
-        round_id: Optional[str] = None  # 新增：关联的round_id
-    ) -> Optional[Dict[str, Any]]:
-        """下单方法"""
-        if not self._initialized:
-            await self.initialize()
-            
-        try:
-            # 生成订单ID
-            client_id = self.generate_order_id(symbol)
-            
-            # 构建订单选项
-            options = {
-                'clientId': client_id,
-            }
-            
-            if round_id:
-                options['comment'] = f"Round_{round_id}"  # 在注释中保存round_id
-
-            if trailing_stop:
-                options['trailingStopLoss'] = trailing_stop
-
-            result = None
-            if direction == 'buy':
-                if entry_type == 'market':
-                    result = await self.connection.create_market_buy_order(
-                        symbol=symbol,
-                        volume=volume,
-                        stop_loss=stop_loss,
-                        take_profit=take_profits[0] if take_profits else None,
-                        options=options
-                    )
-                else:
-                    result = await self.connection.create_limit_buy_order(
-                        symbol=symbol,
-                        volume=volume,
-                        open_price=entry_price,
-                        stop_loss=stop_loss,
-                        take_profit=take_profits[0] if take_profits else None,
-                        options=options
-                    )
-            else:
-                if entry_type == 'market':
-                    result = await self.connection.create_market_sell_order(
-                        symbol=symbol,
-                        volume=volume,
-                        stop_loss=stop_loss,
-                        take_profit=take_profits[0] if take_profits else None,
-                        options=options
-                    )
-                else:
-                    result = await self.connection.create_limit_sell_order(
-                        symbol=symbol,
-                        volume=volume,
-                        open_price=entry_price,
-                        stop_loss=stop_loss,
-                        take_profit=take_profits[0] if take_profits else None,
-                        options=options
-                    )
-
-            if result:
-                # 添加额外信息到结果中
-                result.update({
-                    'roundId': round_id or client_id,  # 使用传入的round_id或生成的client_id
-                    'clientId': client_id,
-                    'orderType': entry_type,
-                    'direction': direction
-                })
-                logging.info(f"Order placed successfully: {result}")
-            
-            return result
-            
-        except Exception as e:
-            logging.error(f"Error placing order: {e}")
-            if hasattr(e, '__dict__'):
-                logging.error(f"Error details: {e.__dict__}")
-            return None
-
-    async def modify_position(
-        self,
-        position_id: str,
-        stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None,
-        trailing_stop: Optional[Dict] = None,
-        round_id: Optional[str] = None  # 新增：round_id参数
-    ) -> Optional[Dict[str, Any]]:
-        """修改持仓"""
-        try:
-            options = {}
-            if trailing_stop:
-                options['trailingStopLoss'] = trailing_stop
-            if round_id:
-                options['comment'] = f"Round_{round_id}"
-
-            result = await self.connection.modify_position(
-                position_id=position_id,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                options=options
-            )
-            return result
-        except Exception as e:
-            logging.error(f"Error modifying position: {e}")
-            return None
-            
+    
     async def _handle_position_update(self, position: Dict):
         """Handle position updates with profit validation"""
         try:
@@ -356,63 +203,6 @@ class TradeManager:
                 logging.info(f"Position {position_id} removed")
         except Exception as e:
             logging.error(f"Error handling position removal: {e}")
-
-    async def initialize(self):
-        """Initialize MetaAPI streaming connection"""
-        if self._initialized:
-            return True
-            
-        try:
-            # Set logging levels
-            logging.getLogger('socketio.client').setLevel(logging.WARNING)
-            logging.getLogger('engineio.client').setLevel(logging.WARNING)
-            
-            # Get account
-            self.account = await self.api.metatrader_account_api.get_account(
-                self.config.account_id
-            )
-            
-            if self.account.state not in ['DEPLOYING', 'DEPLOYED']:
-                logging.info("Deploying account...")
-                await self.account.deploy()
-                
-            logging.info("Waiting for account connection...")
-            await self.account.wait_connected()
-            
-            # Create streaming connection
-            self.connection = self.account.get_streaming_connection()
-            
-            # Add synchronization listener
-            self.sync_listener = TradeSynchronizationListener(self)
-            self.connection.add_synchronization_listener(self.sync_listener)
-            
-            # Connect
-            await self.connection.connect()
-            
-            # Wait for synchronization
-            try:
-                logging.info("Waiting for synchronization...")
-                await asyncio.wait_for(
-                    self.connection.wait_synchronized(),
-                    timeout=300
-                )
-                self.sync_complete.set()
-                logging.info("Account synchronized successfully")
-                
-                # Initialize health monitor
-                self.health_monitor = self.connection.health_monitor
-                
-            except asyncio.TimeoutError:
-                logging.warning("Synchronization timeout")
-                
-            self._initialized = True
-            return True
-            
-        except Exception as e:
-            logging.error(f"Error initializing trade manager: {e}")
-            if hasattr(e, '__dict__'):
-                logging.error(f"Error details: {e.__dict__}")
-            return False
 
     def add_price_listener(self, symbol: str, callback):
         """Add price listener for specific symbol"""
@@ -546,6 +336,99 @@ class TradeManager:
         except Exception as e:
             logging.error(f"Error closing position: {e}")
             return None
+
+
+    async def modify_position(
+        self,
+        position_id: str,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        trailing_stop: Optional[Dict] = None
+    ) -> Optional[Dict[str, Any]]:
+        """修改持仓"""
+        if not self._initialized:
+            await self.initialize()
+            
+        try:
+            # 移除options参数，直接使用基本参数
+            result = await self.connection.modify_position(
+                position_id=position_id,
+                stop_loss=stop_loss,
+                take_profit=take_profit
+            )
+            
+            # 如果需要设置trailing stop，使用单独的调用
+            if trailing_stop:
+                try:
+                    # 这里假设MetaApi提供了设置trailing stop的方法
+                    # 具体方法名和参数需要根据实际API调整
+                    await self.connection.modify_position(
+                        position_id=position_id,
+                        trailing_stop_loss=trailing_stop['distance']
+                    )
+                except Exception as e:
+                    logging.error(f"Error setting trailing stop: {e}")
+            
+            return result
+
+        except Exception as e:
+            logging.error(f"Error modifying position: {e}")
+            return None
+
+    async def subscribe_to_market_data(self, symbol: str):
+        """订阅市场数据"""
+        try:
+            if not self._initialized:
+                await self.initialize()
+
+            if symbol in self._subscribed_symbols:
+                return
+
+            if self.connection:
+                # 使用正确的订阅格式
+                await self.connection.subscribe_to_market_data(
+                    symbol,
+                    ['quotes']  # 简化订阅格式
+                )
+                self._subscribed_symbols.add(symbol)
+                
+                logging.info(f"Subscribed to market data for {symbol}")
+            else:
+                logging.error("Connection not available")
+
+        except Exception as e:
+            logging.error(f"Error subscribing to market data for {symbol}: {e}")
+
+    def add_position_update_callback(self, callback):
+        """添加仓位更新回调"""
+        if not hasattr(self, '_position_callbacks'):
+            self._position_callbacks = set()
+        self._position_callbacks.add(callback)
+
+    def add_order_update_callback(self, callback):
+        """添加订单更新回调"""
+        if not hasattr(self, '_order_callbacks'):
+            self._order_callbacks = set()
+        self._order_callbacks.add(callback)
+
+    async def _handle_position_update(self, position_data: Dict[str, Any]):
+        """处理仓位更新"""
+        if hasattr(self, '_position_callbacks'):
+            for callback in self._position_callbacks:
+                try:
+                    await callback(position_data)
+                except Exception as e:
+                    logging.error(f"Error in position callback: {e}")
+
+    async def _handle_order_update(self, order_data: Dict[str, Any]):
+        """处理订单更新"""
+        if hasattr(self, '_order_callbacks'):
+            for callback in self._order_callbacks:
+                try:
+                    await callback(order_data)
+                except Exception as e:
+                    logging.error(f"Error in order callback: {e}")
+
 
     async def _subscribe_to_updates(self):
         """Subscribe to market updates and order/position changes"""
@@ -858,7 +741,203 @@ class TradeManager:
         except Exception as e:
             logging.error(f"Error getting order: {e}")
             return None
+
+
+
+    def generate_order_id(self, symbol: str, round_id: Optional[str] = None) -> Dict[str, str]:
+        """
+        生成订单ID和注释
+        确保clientId + comment总长度不超过26个字符
+        """
+        try:
+            timestamp = int(datetime.now().timestamp())
+            short_timestamp = str(timestamp)[-4:]  # 只使用最后4位
             
+            # 为symbol创建短代码
+            symbol_code = ''.join(c for c in symbol if c.isalpha())[:3].upper()
+            
+            # 创建短的clientId
+            client_id = f"T_{symbol_code}_{short_timestamp}"  # 例如: "TXAU1234"
+            
+            # 如果有round_id，创建短注释
+            comment = None
+            if round_id:
+                # 从round_id提取数字部分
+                round_num = ''.join(filter(str.isdigit, round_id))[-4:]  # 只使用最后4位
+                comment = f"R{round_num}"  # 例如: "R1234"
+            
+            return {
+                'clientId': client_id,
+                'comment': comment
+            }
+        except Exception as e:
+            logging.error(f"Error generating order ID: {e}")
+            # 返回fallback值
+            return {
+                'clientId': f"T{int(time.time())%10000}",
+                'comment': None
+            }
+
+    async def place_order(
+        self,
+        symbol: str,
+        direction: str,
+        volume: float,
+        entry_type: str = 'market',
+        entry_price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profits: Optional[List[float]] = None,
+        trailing_stop: Optional[Dict] = None,
+        round_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """下单方法"""
+        if not self._initialized:
+            await self.initialize()
+            
+        try:
+            # 生成订单ID和注释
+            id_info = self.generate_order_id(symbol, round_id)
+            
+            # 构建订单选项
+            options = {'clientId': id_info['clientId']}
+            if id_info['comment']:
+                options['comment'] = id_info['comment']
+
+            if trailing_stop:
+                options['trailingStopLoss'] = trailing_stop
+
+            result = None
+            if direction == 'buy':
+                if entry_type == 'market':
+                    result = await self.connection.create_market_buy_order(
+                        symbol=symbol,
+                        volume=volume,
+                        stop_loss=stop_loss,
+                        take_profit=take_profits[0] if take_profits else None,
+                        options=options
+                    )
+                else:
+                    result = await self.connection.create_limit_buy_order(
+                        symbol=symbol,
+                        volume=volume,
+                        open_price=entry_price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profits[0] if take_profits else None,
+                        options=options
+                    )
+            else:
+                if entry_type == 'market':
+                    result = await self.connection.create_market_sell_order(
+                        symbol=symbol,
+                        volume=volume,
+                        stop_loss=stop_loss,
+                        take_profit=take_profits[0] if take_profits else None,
+                        options=options
+                    )
+                else:
+                    result = await self.connection.create_limit_sell_order(
+                        symbol=symbol,
+                        volume=volume,
+                        open_price=entry_price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profits[0] if take_profits else None,
+                        options=options
+                    )
+
+            if result:
+                result.update({
+                    'roundId': round_id,
+                    'clientId': id_info['clientId'],
+                    'orderType': entry_type,
+                    'direction': direction
+                })
+                await self._wait_order_completion(result['orderId'])
+                logging.info(f"Order placed successfully: {result}")
+            
+            return result
+            
+        except Exception as e:
+            logging.error(f"Error placing order: {e}")
+            if hasattr(e, '__dict__'):
+                logging.error(f"Error details: {e.__dict__}")
+            return None
+
+
+    async def _wait_order_completion(self, order_id: str, timeout: float = 30) -> bool:
+        """等待订单完成"""
+        try:
+            start_time = datetime.now()
+            while (datetime.now() - start_time).total_seconds() < timeout:
+                order = await self.get_order(order_id)
+                if not order or order.get('state') in ['COMPLETED', 'CANCELED', 'REJECTED']:
+                    return True
+                await asyncio.sleep(0.1)
+            return False
+        except Exception as e:
+            logging.error(f"Error waiting for order completion: {e}")
+            return False
+
+    async def initialize(self):
+        """Initialize MetaAPI streaming connection"""
+        if self._initialized:
+            return True
+            
+        try:
+            # Set logging levels
+            logging.getLogger('socketio.client').setLevel(logging.WARNING)
+            logging.getLogger('engineio.client').setLevel(logging.WARNING)
+            
+            # Get account
+            self.account = await self.api.metatrader_account_api.get_account(
+                self.config.account_id
+            )
+            
+            if not self.account:
+                raise Exception("Could not get account")
+
+            if self.account.state not in ['DEPLOYING', 'DEPLOYED']:
+                logging.info("Deploying account...")
+                await self.account.deploy()
+                
+            logging.info("Waiting for account connection...")
+            await self.account.wait_connected()
+            
+            # Create streaming connection
+            self.connection = self.account.get_streaming_connection()
+            if not self.connection:
+                raise Exception("Could not create streaming connection")
+            
+            # Add synchronization listener
+            self.sync_listener = TradeSynchronizationListener(self)
+            self.connection.add_synchronization_listener(self.sync_listener)
+            
+            # Connect
+            await self.connection.connect()
+            
+            # Wait for synchronization
+            try:
+                logging.info("Waiting for synchronization...")
+                await asyncio.wait_for(
+                    self.connection.wait_synchronized(),
+                    timeout=300
+                )
+                self.sync_complete.set()
+                logging.info("Account synchronized successfully")
+                
+                # Initialize health monitor
+                self.health_monitor = self.connection.health_monitor
+                
+            except asyncio.TimeoutError:
+                logging.warning("Synchronization timeout")
+                
+            self._initialized = True
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error initializing trade manager: {e}")
+            return False
+
+
     async def wait_synchronized(self, timeout: float = 300) -> bool:
         """Wait for synchronization with timeout"""
         try:

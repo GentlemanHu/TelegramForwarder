@@ -9,34 +9,42 @@ from .trade_manager import TradeManager
 
 
 class PositionManager:
-
     def __init__(self, trade_manager: TradeManager):
         self.trade_manager = trade_manager
         self.layer_manager = SmartLayerManager(trade_manager)
-        self.round_manager = RoundManager(
-            trade_manager.connection, 
-            trade_manager
-        )
+        self.round_manager = RoundManager(trade_manager.connection, trade_manager)
         self._initialized = False
 
     async def initialize(self):
-        """Initialize position manager"""
+        """Initialize position manager and all sub-components"""
         try:
             if self._initialized:
                 return True
                 
-            # Initialize trade manager if not already initialized
+            # Initialize trade manager first
             if not self.trade_manager._initialized:
-                await self.trade_manager.initialize()
+                success = await self.trade_manager.initialize()
+                if not success:
+                    raise Exception("Failed to initialize trade manager")
 
-            await self.round_manager.initialize()
+            # Wait for trade manager to be fully ready
+            if not self.trade_manager.sync_complete.is_set():
+                success = await self.trade_manager.wait_synchronized()
+                if not success:
+                    raise Exception("Trade manager synchronization failed")
+
+            # Initialize round manager
+            if not self.round_manager._initialized:
+                success = await self.round_manager.initialize()
+                if not success:
+                    raise Exception("Failed to initialize round manager")
+
             self._initialized = True
             return True
             
         except Exception as e:
             logging.error(f"Error initializing position manager: {e}")
             return False
-
 
 
     async def create_layered_positions(self, signal: Dict[str, Any]) -> Optional[str]:
@@ -239,7 +247,6 @@ class PositionManager:
         except Exception as e:
             logging.error(f"Error in position manager cleanup: {e}")
 
-    # 在 position_manager.py 中的 PositionManager 类中修改 create_single_position 方法：
     async def create_single_position(self, signal: Dict[str, Any]) -> Optional[str]:
         """创建单个仓位"""
         try:
@@ -267,10 +274,10 @@ class PositionManager:
                 if price_info:
                     entry_price = price_info['ask'] if signal['action'] == 'buy' else price_info['bid']
                 else:
-                    # 如果没有价格信息，尝试订阅
+                    # 使用正确的订阅格式
                     await self.trade_manager.connection.subscribe_to_market_data(
-                        symbol=signal['symbol'],
-                        subscriptions=['quotes']
+                        signal['symbol'],
+                        [{'type': 'quotes'}]
                     )
                     # 等待价格数据
                     for _ in range(10):  # 最多等待10次
@@ -292,6 +299,9 @@ class PositionManager:
             # 计算交易量
             volume = self.trade_manager.config.min_lot_size
 
+            # 创建round_id
+            round_id = f"R_{signal['symbol']}_{int(datetime.now().timestamp())}"
+
             # 下单
             order_result = await self.trade_manager.place_order(
                 symbol=signal['symbol'],
@@ -300,17 +310,12 @@ class PositionManager:
                 entry_type=signal['entry_type'],
                 entry_price=signal.get('entry_price'),
                 stop_loss=signal.get('stop_loss'),
-                take_profits=signal.get('take_profits', [])
+                take_profits=signal.get('take_profits', []),
+                round_id=round_id  # 传入round_id
             )
 
             if not order_result:
                 logging.error("Failed to place order")
-                return None
-
-            # 使用订单返回的roundId
-            round_id = order_result.get('roundId')
-            if not round_id:
-                logging.error("No round ID in order result")
                 return None
 
             # 创建Position对象
@@ -324,42 +329,32 @@ class PositionManager:
                 stop_loss=signal.get('stop_loss'),
                 take_profits=signal.get('take_profits', []),
                 layer_index=0,
+                round_id=round_id,  # 设置round_id
                 metadata={
                     'creation_time': datetime.now().isoformat(),
-                    'single_position': True,
-                    'round_id': round_id  # 保存round_id到元数据
+                    'single_position': True
                 }
             )
 
-            # 创建TradeRound对象
-            trade_round = TradeRound(
-                id=round_id,
-                symbol=signal['symbol'],
-                direction=signal['action'],
-                created_at=datetime.now(),
-                positions={position.id: position},
-                tp_levels=[TPLevel(price=tp) for tp in signal.get('take_profits', [])],
-                stop_loss=signal.get('stop_loss'),
-                status=RoundStatus.PENDING,
-                metadata={
-                    'signal': signal,
-                    'creation_time': datetime.now().isoformat()
-                }
-            )
+            # 确保round_manager已初始化
+            if not hasattr(self.round_manager, '_price_listeners'):
+                await self.round_manager.initialize()
 
-            # 保存到RoundManager
-            async with self.round_manager.lock:
-                self.round_manager.rounds[round_id] = trade_round
-                # 设置价格监控
-                await self.round_manager._setup_price_monitoring(trade_round)
+            # 创建交易round
+            round_id = await self.round_manager.create_round(signal, [position])
+            if not round_id:
+                logging.error("Failed to create trade round")
+                return None
 
-            logging.info(f"Created trade round: {round_id}")
+            # 设置价格监控
+            await self.round_manager._setup_price_monitoring(signal['symbol'])
+
+            logging.info(f"Created single position with round_id: {round_id}")
             return round_id
 
         except Exception as e:
             logging.error(f"Error creating single position: {e}")
             return None
-
 
 
 

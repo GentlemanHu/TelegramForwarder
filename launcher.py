@@ -64,7 +64,6 @@ class AsyncBotLauncher:
                 self.ai_analyzer,
                 self.position_manager
             )
-
             # Initialize trading system
             success = await self.trade_manager.initialize()
             if not success:

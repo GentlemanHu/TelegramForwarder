@@ -8,6 +8,7 @@ from .ai_analyzer import AIAnalyzer
 from .position_manager import PositionManager
 from .position import Position
 from .round_manager import RoundStatus
+from .tp_manager import *
 
 class SignalProcessor:
     def __init__(self, config: 'TradeConfig', 
@@ -16,7 +17,9 @@ class SignalProcessor:
         self.config = config
         self.ai_analyzer = ai_analyzer
         self.position_manager = position_manager
-        self.processing_lock = asyncio.Lock()
+                # 将锁分开，用于不同目的
+        self.signal_lock = asyncio.Lock()  # 用于信号追踪
+        self.round_lock = asyncio.Lock()   # 用于round更新
         self.active_rounds: Dict[str, Dict[str, Any]] = {}
 
     async def handle_channel_message(self, event):
@@ -34,39 +37,194 @@ class SignalProcessor:
             if hasattr(e, '__dict__'):
                 logging.error(f"Error details: {e.__dict__}")
 
+
+    async def _find_matching_round(self, signal: Dict[str, Any]) -> Optional[str]:
+        """找到匹配的交易轮次"""
+        try:
+            symbol = signal['symbol']
+            current_time = datetime.now()
+            
+            # 获取所有rounds的当前状态
+            rounds_info = []
+            for round_id, round_data in self.position_manager.round_manager.rounds.items():
+                try:
+                    time_diff = (current_time - round_data.created_at).total_seconds()
+                    rounds_info.append({
+                        'round_id': round_id,
+                        'symbol': round_data.symbol,
+                        'direction': round_data.direction,
+                        'status': round_data.status,
+                        'time_diff': time_diff,
+                        'created_at': round_data.created_at.isoformat()
+                    })
+                except Exception as e:
+                    logging.error(f"Error processing round {round_id}: {e}")
+
+            logging.debug(f"Available rounds: {rounds_info}")
+            
+            # 查找最近的相同symbol的活跃round
+            for round_id, round_data in self.position_manager.round_manager.rounds.items():
+                try:
+                    time_diff = (current_time - round_data.created_at).total_seconds()
+                    
+                    if (round_data.symbol == symbol and 
+                        round_data.direction == signal['action'] and
+                        str(round_data.status) not in ['CLOSED', 'CANCELLED'] and
+                        time_diff < 300):  # 5分钟内
+                        
+                        logging.info(f"Found matching round {round_id} created {time_diff}s ago")
+                        return round_id
+                        
+                except Exception as e:
+                    logging.error(f"Error checking round {round_id}: {e}")
+                    continue
+                    
+            logging.info("No matching round found, will create new one")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error finding matching round: {e}")
+            return None
+
+
+
     async def process_message(self, message: str):
         """处理频道消息"""
-        async with self.processing_lock:
-            try:
-                # 使用AI分析信号
-                signal = await self.ai_analyzer.analyze_signal(message)
-                if not signal:
-                    logging.info("No valid trading signal detected in message")
-                    return
+        try:
+            # 使用AI分析信号
+            signal = await self.ai_analyzer.analyze_signal(message)
+            if not signal:
+                logging.info("No valid trading signal detected in message")
+                return
 
-                logging.info(f"Detected signal type: {signal.get('type')}")
-                logging.info(f"Signal details: {signal}")
+            logging.info(f"Detected signal type: {signal.get('type')}")
+            logging.info(f"Signal details: {signal}")
 
-                # 生成或获取round_id
-                round_id = signal.get('round_id')
-                if not round_id:
-                    round_id = str(uuid.uuid4())
-                    signal['round_id'] = round_id
+            # 使用signal_lock只保护信号追踪部分
+            async with self.signal_lock:
+                round_id = await self._find_matching_round(signal)
+                logging.debug(f"Found matching round: {round_id}")
 
-                if signal['type'] == 'entry':
-                    await self._handle_entry_signal(signal)
-                elif signal['type'] == 'modify':
-                    await self._handle_modify_signal(signal)
-                elif signal['type'] == 'exit':
-                    await self._handle_exit_signal(signal)
+            if round_id:
+                # 处理更新，不需要全局锁
+                success = await self._handle_modify_signal(signal, round_id)
+                if success:
+                    logging.info(f"Updated existing round: {round_id}")
                 else:
-                    logging.warning(f"Unknown signal type: {signal['type']}")
+                    logging.error(f"Failed to update round: {round_id}")
+            else:
+                # 创建新的round，不需要全局锁
+                if signal['type'] == 'entry':
+                    if signal['layers'].get('enabled'):
+                        new_round_id = await self.position_manager.create_layered_positions(signal)
+                    else:
+                        new_round_id = await self.position_manager.create_single_position(signal)
+                    
+                    if new_round_id:
+                        logging.info(f"Created new trading round: {new_round_id}")
+                    else:
+                        logging.error("Failed to create positions")
 
-            except Exception as e:
-                logging.error(f"Error processing message: {e}")
-                logging.error(f"Original message: {message}")
-                if hasattr(e, '__dict__'):
-                    logging.error(f"Error details: {e.__dict__}")
+        except Exception as e:
+            logging.error(f"Error processing message: {e}")
+            logging.error(f"Original message: {message}")
+            if hasattr(e, '__dict__'):
+                logging.error(f"Error details: {e.__dict__}")
+
+    async def _handle_modify_signal(self, signal: Dict[str, Any], round_id: str) -> bool:
+        """处理修改信号"""
+        try:
+            logging.info(f"Starting to handle modify signal for round {round_id}")
+            
+            # 验证和获取必要的状态
+            if not self.position_manager.trade_manager._initialized:
+                await self.position_manager.trade_manager.initialize()
+                
+            terminal_state = self.position_manager.trade_manager.connection.terminal_state
+            if not terminal_state:
+                logging.error("Terminal state not available")
+                return False
+            
+            # 获取round信息，使用round特定的锁
+            async with self.round_lock:
+                trade_round = self.position_manager.round_manager.rounds.get(round_id)
+                if not trade_round:
+                    logging.error(f"Round {round_id} not found")
+                    return False
+
+            logging.info(f"Found trade round with {len(trade_round.positions)} positions")
+
+            # 收集活跃仓位
+            active_positions = []
+            for pos_id, pos in trade_round.positions.items():
+                try:
+                    position = next(
+                        (p for p in terminal_state.positions if p['id'] == pos_id), 
+                        None
+                    )
+                    if position and position.get('state') != 'CLOSED':
+                        active_positions.append(pos)
+                        logging.info(f"Found active position: {pos_id}")
+                except Exception as e:
+                    logging.error(f"Error checking position {pos_id}: {e}")
+
+            # 更新仓位，每个仓位独立处理
+            update_tasks = []
+            for pos in active_positions:
+                if signal.get('stop_loss'):
+                    update_tasks.append(
+                        self.position_manager.trade_manager.connection.modify_position(
+                            position_id=pos.id,
+                            stop_loss=signal['stop_loss']
+                        )
+                    )
+                    
+                if signal.get('take_profits'):
+                    update_tasks.append(
+                        self.position_manager.trade_manager.connection.modify_position(
+                            position_id=pos.id,
+                            take_profit=signal['take_profits'][0]
+                        )
+                    )
+
+            # 并行执行所有更新
+            if update_tasks:
+                await asyncio.gather(*update_tasks, return_exceptions=True)
+
+            # 更新round配置
+            async with self.round_lock:
+                trade_round.stop_loss = signal.get('stop_loss')
+                trade_round.tp_levels = [TPLevel(price=tp) for tp in signal.get('take_profits', [])]
+                
+                # 如果需要创建新layers
+                if (signal.get('entry_range') and 
+                    signal.get('entry_type') == 'limit' and 
+                    len(active_positions) > 0):
+                    layer_config = signal.get('layers', {})
+                    if not layer_config.get('enabled'):
+                        layer_config['enabled'] = True
+                        layer_config['count'] = len(signal['take_profits'])
+                        layer_config['distribution'] = 'equal'
+                    
+                    await self.position_manager.round_manager._create_additional_layers(
+                        trade_round, 
+                        {
+                            'entry_range': signal['entry_range'],
+                            'layers': layer_config,
+                            'stop_loss': signal['stop_loss'],
+                            'take_profits': signal['take_profits']
+                        }
+                    )
+
+            logging.info(f"Successfully updated round {round_id}")
+            return True
+
+        except Exception as e:
+            logging.error(f"Error handling modify signal: {e}")
+            if hasattr(e, '__dict__'):
+                logging.error(f"Error details: {e.__dict__}")
+            return False
+
 
     async def _handle_entry_signal(self, signal: Dict[str, Any]):
         """处理入场信号"""
@@ -125,68 +283,6 @@ class SignalProcessor:
             if hasattr(e, '__dict__'):
                 logging.error(f"Error details: {e.__dict__}")
 
-
-    async def _handle_modify_signal(self, signal: Dict[str, Any]):
-        """处理修改信号"""
-        try:
-            symbol = signal['symbol']
-            found_rounds = []
-            terminal_state = self.position_manager.trade_manager.connection.terminal_state
-            
-            # 查找相关的交易rounds
-            for round_id, round_data in self.active_rounds.items():
-                if (round_data['signal']['symbol'] == symbol and 
-                    round_data['status'] == 'active'):
-                    found_rounds.append(round_id)
-
-            for round_id in found_rounds:
-                config_updates = {}
-                
-                # 更新止损
-                if 'stop_loss' in signal:
-                    config_updates['stop_loss'] = signal['stop_loss']
-                
-                # 更新止盈
-                if 'take_profits' in signal:
-                    config_updates['take_profits'] = signal['take_profits']
-                    
-                # 更新trailing stop
-                if signal.get('trailing_stop'):
-                    config_updates['trailing_stop'] = signal['trailing_stop']
-                
-                # 处理移动到保本
-                if signal.get('move_to_breakeven', False):
-                    config_updates['move_to_breakeven'] = True
-                    
-                    # 获取原始入场价格作为新的止损
-                    trade_round = self.position_manager.round_manager.rounds.get(round_id)
-                    if trade_round:
-                        for pos_id in trade_round.active_positions:
-                            position = next(
-                                (p for p in terminal_state.positions if p['id'] == pos_id),
-                                None
-                            )
-                            if position:
-                                config_updates['stop_loss'] = position.get('openPrice')
-                
-                # 应用更新
-                if config_updates:
-                    success = await self.position_manager.update_positions_config(
-                        round_id, config_updates
-                    )
-                    if success:
-                        logging.info(f"Modified positions for round: {round_id}")
-                        self.active_rounds[round_id]['last_modification'] = {
-                            'signal': signal,
-                            'timestamp': datetime.now()
-                        }
-                    else:
-                        logging.error(f"Failed to modify positions for round: {round_id}")
-
-        except Exception as e:
-            logging.error(f"Error handling modify signal: {e}")
-            if hasattr(e, '__dict__'):
-                logging.error(f"Error details: {e.__dict__}")
 
     async def _handle_exit_signal(self, signal: Dict[str, Any]):
         """处理出场信号"""
