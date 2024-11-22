@@ -1,6 +1,13 @@
+
 from .position import Position, PositionStatus
 from .round_manager import RoundManager, RoundStatus, TPLevel, TradeRound
-from .layer_manager import SmartLayerManager, LayerDistributionType, LayerDistribution
+from .layer_manager import (
+    SmartLayerManager, 
+    LayerDistributionType, 
+    LayerConfig,
+    Layer
+)
+from .tp_manager import DynamicTPManager, TPStatus
 from .position_manager import PositionManager
 from .trade_manager import TradeManager
 from .signal_processor import SignalProcessor
@@ -16,11 +23,12 @@ __all__ = [
     'TradeRound',
     'SmartLayerManager',
     'LayerDistributionType',
-    'LayerDistribution',
+    'LayerConfig',
+    'Layer',
+    'DynamicTPManager',
+    'TPStatus',
     'PositionManager',
     'TradeManager',
     'SignalProcessor',
-    'TradeConfig',
-    'LayerConfig',
-    'AIAnalyzer'
+    'TradeConfig'
 ]

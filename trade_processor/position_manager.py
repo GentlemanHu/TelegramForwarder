@@ -3,7 +3,7 @@ import logging
 import asyncio
 from datetime import datetime
 from .position import Position, PositionStatus 
-from .round_manager import RoundManager
+from .round_manager import RoundManager, TradeRound, RoundStatus, TPLevel  # 添加这行
 from .layer_manager import SmartLayerManager, LayerDistributionType
 from .trade_manager import TradeManager
 
@@ -37,96 +37,93 @@ class PositionManager:
             logging.error(f"Error initializing position manager: {e}")
             return False
 
+
+
     async def create_layered_positions(self, signal: Dict[str, Any]) -> Optional[str]:
-        """Create layered positions with smart distribution"""
+        """创建分层仓位"""
         try:
-            # Get account info
+            # 获取账户信息用于仓位计算
             terminal_state = self.trade_manager.connection.terminal_state
             account_info = terminal_state.account_information
-            account_size = float(account_info['balance'])
-            
-            # Subscribe to market data
-            await self.trade_manager.subscribe_to_market_data(signal['symbol'])
-            
-            # Calculate layer distribution
-            price_range = None
-            if signal['entry_type'] == 'limit' and signal['entry_range']:
-                price_range = (
-                    signal['entry_range']['min'],
-                    signal['entry_range']['max']
-                )
-                
-            base_price = signal['entry_price'] or (
-                terminal_state.price(signal['symbol'])['ask' 
-                if signal['action'] == 'buy' else 'bid']
+
+            # 创建 LayerConfig
+            config = LayerConfig(
+                entry_price=signal.get('entry_price') or (
+                    terminal_state.price(signal['symbol'])['ask' 
+                    if signal['action'] == 'buy' else 'bid']
+                ),
+                stop_loss=signal.get('stop_loss'),
+                base_tp=signal['take_profits'][0] if signal.get('take_profits') else None,
+                risk_points=abs(signal.get('entry_price', 0) - signal.get('stop_loss', 0)),
+                num_layers=signal['layers'].get('count', 3),
+                distribution_type=LayerDistributionType[
+                    signal['layers'].get('distribution', 'EQUAL').upper()
+                ],
+                volume_profile={'base_volume': 0.01}  # 可以根据需要调整
             )
-            
-            distribution = await self.layer_manager.calculate_layer_distribution(
+
+            # 获取市场数据
+            market_data = {
+                'account_size': float(account_info['balance']),
+                'risk_percent': 0.02,  # 可以从配置或信号中获取
+                'momentum': 0,  # 可以从市场分析中获取
+                'volatility': 0.001  # 可以从市场分析中获取
+            }
+
+            # 计算智能分层
+            layers = await self.layer_manager.calculate_smart_layers(
                 symbol=signal['symbol'],
                 direction=signal['action'],
-                base_price=base_price,
-                price_range=price_range,
-                num_layers=signal['layers'].get('count', 3),
-                account_size=account_size,
-                distribution_type=LayerDistributionType.DYNAMIC
+                config=config,
+                market_data=market_data
             )
-            
-            # Create positions
+
+            if not layers:
+                logging.error("Failed to calculate layers")
+                return None
+
+            # 创建仓位
             positions = []
-            for i, (entry_price, volume, tps) in enumerate(zip(
-                distribution.entry_prices,
-                distribution.volumes,
-                distribution.take_profits
-            )):
-                # Create trailing stop if specified
-                trailing_stop = None
-                if signal.get('trailing_stop'):
-                    trailing_stop = {
-                        'distance': {
-                            'distance': 200,
-                            'units': 'RELATIVE_POINTS'
-                        }
-                    }
-                
+            for layer in layers:
                 order_result = await self.trade_manager.place_order(
                     symbol=signal['symbol'],
                     direction=signal['action'],
-                    volume=volume,
+                    volume=layer.volume,
                     entry_type=signal['entry_type'],
-                    entry_price=entry_price,
-                    stop_loss=distribution.stop_loss,
-                    take_profits=tps,
-                    trailing_stop=trailing_stop
+                    entry_price=layer.entry_price,
+                    stop_loss=layer.stop_loss,
+                    take_profits=layer.take_profits
                 )
-                
+
                 if order_result:
                     position = Position(
                         id=order_result['orderId'],
                         symbol=signal['symbol'],
                         direction=signal['action'],
-                        volume=volume,
+                        volume=layer.volume,
                         entry_type=signal['entry_type'],
-                        entry_price=entry_price,
-                        stop_loss=distribution.stop_loss,
-                        take_profits=tps,
-                        layer_index=i,
+                        entry_price=layer.entry_price,
+                        stop_loss=layer.stop_loss,
+                        take_profits=layer.take_profits,
+                        layer_index=layer.index,
                         metadata={
                             'creation_time': datetime.now().isoformat(),
                             'layer_info': {
-                                'total_layers': len(distribution.entry_prices),
-                                'layer_index': i
+                                'total_layers': len(layers),
+                                'layer_index': layer.index,
+                                'risk_reward_ratio': layer.risk_reward_ratio
                             }
                         }
                     )
                     positions.append(position)
-            
+
             if positions:
-                # Create trade round
+                # 创建交易round
                 round_id = await self.round_manager.create_round(signal, positions)
                 return round_id
-                
+
             return None
-            
+
         except Exception as e:
             logging.error(f"Error creating layered positions: {e}")
             return None
@@ -241,71 +238,156 @@ class PositionManager:
             
         except Exception as e:
             logging.error(f"Error in position manager cleanup: {e}")
-    async def create_single_position(self, signal: Dict[str, Any]) -> Optional[str]:
-        """Create single position"""
-        try:
-            # Get account info
-            account_info = await self.trade_manager.get_account_info()
-            account_size = account_info['balance']
-            
-            # Calculate optimal entry price and volume
-            volatility = await self.layer_manager._calculate_volatility(signal['symbol'])
-            momentum = await self.layer_manager._calculate_momentum(signal['symbol'])
-            
-            # Calculate take profits based on volatility and momentum
-            take_profits = []
-            if signal.get('take_profits'):
-                take_profits = signal['take_profits']
-            else:
-                base_price = signal['entry_price'] or (
-                    await self.trade_manager.get_current_price(signal['symbol'])
-                )['ask' if signal['action'] == 'buy' else 'bid']
-                
-                tp_distances = [
-                    volatility * 2 * (1 + momentum),
-                    volatility * 3 * (1 + momentum),
-                    volatility * 4 * (1 + momentum)
-                ]
-                
-                for dist in tp_distances:
-                    tp = base_price * (1 + dist if signal['action'] == 'buy' else 1 - dist)
-                    take_profits.append(round(tp, 5))
 
-            # Place order
+    # 在 position_manager.py 中的 PositionManager 类中修改 create_single_position 方法：
+    async def create_single_position(self, signal: Dict[str, Any]) -> Optional[str]:
+        """创建单个仓位"""
+        try:
+            # 获取账户信息
+            terminal_state = self.trade_manager.connection.terminal_state
+            if not terminal_state:
+                logging.error("Terminal state not available")
+                return None
+                
+            account_info = terminal_state.account_information
+            if not account_info:
+                logging.error("Account information not available")
+                return None
+                
+            account_size = float(account_info.get('balance', 0))
+            if account_size <= 0:
+                logging.error("Invalid account balance")
+                return None
+
+            # 获取当前价格
+            entry_price = signal.get('entry_price')
+            if not entry_price and signal['entry_type'] == 'market':
+                # 直接从 terminal_state 获取价格
+                price_info = terminal_state.price(signal['symbol'])
+                if price_info:
+                    entry_price = price_info['ask'] if signal['action'] == 'buy' else price_info['bid']
+                else:
+                    # 如果没有价格信息，尝试订阅
+                    await self.trade_manager.connection.subscribe_to_market_data(
+                        symbol=signal['symbol'],
+                        subscriptions=['quotes']
+                    )
+                    # 等待价格数据
+                    for _ in range(10):  # 最多等待10次
+                        await asyncio.sleep(0.1)
+                        price_info = terminal_state.price(signal['symbol'])
+                        if price_info:
+                            entry_price = price_info['ask'] if signal['action'] == 'buy' else price_info['bid']
+                            break
+
+            if not entry_price:
+                logging.error(f"Unable to determine entry price for {signal['symbol']}")
+                return None
+
+            # 设置默认止损
+            if not signal.get('stop_loss'):
+                stop_distance = entry_price * 0.01  # 1%的止损距离
+                signal['stop_loss'] = entry_price - stop_distance if signal['action'] == 'buy' else entry_price + stop_distance
+
+            # 计算交易量
+            volume = self.trade_manager.config.min_lot_size
+
+            # 下单
             order_result = await self.trade_manager.place_order(
                 symbol=signal['symbol'],
                 direction=signal['action'],
-                volume=signal.get('volume', 0.01),
+                volume=volume,
                 entry_type=signal['entry_type'],
                 entry_price=signal.get('entry_price'),
                 stop_loss=signal.get('stop_loss'),
-                take_profits=take_profits
+                take_profits=signal.get('take_profits', [])
             )
 
-            if order_result:
-                position = Position(
-                    id=order_result['orderId'],
-                    symbol=signal['symbol'],
-                    direction=signal['action'],
-                    volume=signal.get('volume', 0.01),
-                    entry_type=signal['entry_type'],
-                    entry_price=signal.get('entry_price'),
-                    stop_loss=signal.get('stop_loss'),
-                    take_profits=take_profits,
-                    layer_index=0,
-                    metadata={
-                        'creation_time': datetime.now().isoformat(),
-                        'single_position': True
-                    }
-                )
-                
-                # Create trade round
-                round_id = await self.round_manager.create_round(signal, [position])
-                return round_id
-                
-            return None
-            
+            if not order_result:
+                logging.error("Failed to place order")
+                return None
+
+            # 使用订单返回的roundId
+            round_id = order_result.get('roundId')
+            if not round_id:
+                logging.error("No round ID in order result")
+                return None
+
+            # 创建Position对象
+            position = Position(
+                id=order_result['orderId'],
+                symbol=signal['symbol'],
+                direction=signal['action'],
+                volume=volume,
+                entry_type=signal['entry_type'],
+                entry_price=signal.get('entry_price'),
+                stop_loss=signal.get('stop_loss'),
+                take_profits=signal.get('take_profits', []),
+                layer_index=0,
+                metadata={
+                    'creation_time': datetime.now().isoformat(),
+                    'single_position': True,
+                    'round_id': round_id  # 保存round_id到元数据
+                }
+            )
+
+            # 创建TradeRound对象
+            trade_round = TradeRound(
+                id=round_id,
+                symbol=signal['symbol'],
+                direction=signal['action'],
+                created_at=datetime.now(),
+                positions={position.id: position},
+                tp_levels=[TPLevel(price=tp) for tp in signal.get('take_profits', [])],
+                stop_loss=signal.get('stop_loss'),
+                status=RoundStatus.PENDING,
+                metadata={
+                    'signal': signal,
+                    'creation_time': datetime.now().isoformat()
+                }
+            )
+
+            # 保存到RoundManager
+            async with self.round_manager.lock:
+                self.round_manager.rounds[round_id] = trade_round
+                # 设置价格监控
+                await self.round_manager._setup_price_monitoring(trade_round)
+
+            logging.info(f"Created trade round: {round_id}")
+            return round_id
+
         except Exception as e:
             logging.error(f"Error creating single position: {e}")
             return None
 
+
+
+
+    async def handle_round_update(self, round_id: str, update_data: Dict[str, Any]):
+        """处理round更新"""
+        try:
+            async with self.round_manager.lock:
+                trade_round = self.round_manager.rounds.get(round_id)
+                if not trade_round:
+                    logging.error(f"Round {round_id} not found")
+                    return False
+
+                # 更新round状态
+                if 'status' in update_data:
+                    trade_round.status = RoundStatus(update_data['status'])
+
+                # 更新止损
+                if 'stop_loss' in update_data:
+                    trade_round.stop_loss = update_data['stop_loss']
+
+                # 更新获利目标
+                if 'take_profits' in update_data:
+                    trade_round.tp_levels = [
+                        TPLevel(price=tp) for tp in update_data['take_profits']
+                    ]
+
+                return True
+
+        except Exception as e:
+            logging.error(f"Error updating round: {e}")
+            return False
