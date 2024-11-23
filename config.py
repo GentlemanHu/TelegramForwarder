@@ -7,6 +7,7 @@ load_dotenv()
 
 @dataclass
 class Config:
+    """基础配置和Telegram配置"""
     # Telegram配置
     TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN")
     API_ID: str = os.getenv("API_ID")
@@ -17,16 +18,11 @@ class Config:
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "forward_bot.db")
     DEFAULT_LANGUAGE: str = os.getenv("DEFAULT_LANGUAGE", "en")
     
-    # 交易配置
+    # API密钥 (这些将被trade_config使用)
     META_API_TOKEN: str = os.getenv("META_API_TOKEN")
     ACCOUNT_ID: str = os.getenv("ACCOUNT_ID")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
     OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
-    
-    # 交易参数
-    DEFAULT_RISK_PERCENT: float = float(os.getenv("DEFAULT_RISK_PERCENT", "2.0"))
-    MAX_LAYERS: int = int(os.getenv("MAX_LAYERS", "7"))
-    MIN_LOT_SIZE: float = float(os.getenv("MIN_LOT_SIZE", "0.01"))
 
     def __post_init__(self):
         """验证必要的配置是否存在"""
@@ -37,8 +33,7 @@ class Config:
             "PHONE_NUMBER",
             "OWNER_ID",
             "META_API_TOKEN",
-            "ACCOUNT_ID",
-            "OPENAI_API_KEY"
+            "ACCOUNT_ID"
         ]
         
         missing_fields = [
@@ -55,8 +50,5 @@ class Config:
         # 验证数值类型
         try:
             self.OWNER_ID = int(self.OWNER_ID)
-            self.DEFAULT_RISK_PERCENT = float(self.DEFAULT_RISK_PERCENT)
-            self.MAX_LAYERS = int(self.MAX_LAYERS)
-            self.MIN_LOT_SIZE = float(self.MIN_LOT_SIZE)
         except ValueError as e:
             raise ValueError(f"Invalid configuration value: {str(e)}")

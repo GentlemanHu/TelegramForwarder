@@ -52,6 +52,24 @@
     - [Performance Monitoring](#performance-monitoring)
     - [Reservoir Statistics](#reservoir-statistics)
   - [WebSocket Client Options](#websocket-client-options)
+- [MetaAPI Cloud SDK API Documentation](#metaapi-cloud-sdk-api-documentation)
+  - [初始化和连接管理](#初始化和连接管理)
+  - [市场数据API](#市场数据api)
+    - [1. K线数据](#1-k线数据)
+    - [2. Tick数据](#2-tick数据)
+    - [3. 订单簿数据](#3-订单簿数据)
+    - [4. 市场信息查询](#4-市场信息查询)
+    - [5. 订阅管理](#5-订阅管理)
+  - [完整的流数据处理示例](#完整的流数据处理示例)
+  - [错误处理和连接管理](#错误处理和连接管理)
+- [重试选项](#重试选项)
+- [连接状态管理](#连接状态管理)
+- [连接状态检查](#连接状态检查)
+- [获取连接健康状态](#获取连接健康状态)
+- [等待特定状态](#等待特定状态)
+- [获取服务器时间](#获取服务器时间)
+- [获取账户信息](#获取账户信息)
+- [资源清理](#资源清理)
 
 ## Core API Components
 
@@ -1100,3 +1118,287 @@ class WebsocketOptions(TypedDict):
     minRetryDelayInSeconds: float # Min retry delay
     maxRetryDelayInSeconds: float # Max retry delay
 ```
+
+# MetaAPI Cloud SDK API Documentation
+
+## 初始化和连接管理
+
+```python
+from metaapi_cloud_sdk import MetaApi
+from datetime import datetime
+import asyncio
+
+# 创建MetaAPI实例
+api = MetaApi(token='your-token')
+
+# 获取账户
+account = await api.metatrader_account_api.get_account(account_id='your-account-id')
+
+# 创建streaming连接
+connection = await account.get_streaming_connection()
+
+# 连接和同步
+await connection.connect()
+await connection.wait_synchronized()
+
+# 连接选项
+class SynchronizationOptions:
+    instanceIndex: Optional[int]      # 账户实例索引，默认等待第一个实例同步
+    applicationPattern: Optional[str]  # 应用正则表达式模式，默认是.*
+    synchronizationId: Optional[str]  # 同步ID，默认使用最后的同步请求ID
+    timeoutInSeconds: Optional[float] # 等待超时时间，默认5分钟
+    intervalInMilliseconds: Optional[float] # 账户重载间隔，默认1秒
+```
+
+## 市场数据API
+
+### 1. K线数据
+
+```python
+# 订阅K线数据
+await connection.subscribe_to_market_data('EURUSD', {
+    'type': 'candles',
+    'timeframe': '1m'  # 支持的时间周期见下方
+})
+
+# MT5支持的时间周期：
+# 1m, 2m, 3m, 4m, 5m, 6m, 10m, 12m, 15m, 20m, 30m
+# 1h, 2h, 3h, 4h, 6h, 8h, 12h
+# 1d, 1w, 1mn
+
+# MT4支持的时间周期：
+# 1m, 5m, 15m, 30m
+# 1h, 4h
+# 1d, 1w, 1mn
+
+# K线数据回调处理
+@connection.on_candle_data_received
+async def process_candle(candle_data):
+    """
+    candle_data结构：
+    {
+        'symbol': 'EURUSD',          # 交易对
+        'timeframe': '1m',           # 时间周期
+        'time': '2023-01-01T00:00:00.000Z',  # K线时间
+        'brokerTime': '2023-01-01 00:00:00', # 券商时间
+        'open': 1.1000,              # 开盘价
+        'high': 1.1100,              # 最高价
+        'low': 1.0900,               # 最低价
+        'close': 1.1050,             # 收盘价
+        'tickVolume': 1000,          # tick成交量
+        'spread': 1,                 # 点差
+        'volume': 100                # 成交量
+    }
+    """
+    print(f"收到K线数据: {candle_data}")
+
+# 获取历史K线数据
+candles = await connection.get_historical_candles('EURUSD', {
+    'timeframe': '1h',
+    'start': datetime(2023, 1, 1),
+    'limit': 1000  # 最大1000条
+})
+```
+
+### 2. Tick数据
+
+```python
+# 订阅Tick数据
+await connection.subscribe_to_market_data('EURUSD', {
+    'type': 'ticks'
+})
+
+# Tick数据回调处理
+@connection.on_tick_data_received
+async def process_tick(tick_data):
+    """
+    tick_data结构：
+    {
+        'symbol': 'EURUSD',          # 交易对
+        'time': '2023-01-01T00:00:00.000Z',  # 时间
+        'brokerTime': '2023-01-01 00:00:00', # 券商时间
+        'bid': 1.1000,               # 买价
+        'ask': 1.1001,               # 卖价
+        'last': 1.1000,              # 最新成交价
+        'volume': 1.0,               # 成交量
+        'side': 'buy'                # 成交方向
+    }
+    """
+    print(f"收到Tick数据: {tick_data}")
+
+# 获取历史Tick数据
+ticks = await connection.get_historical_ticks('EURUSD', {
+    'start': datetime(2023, 1, 1),
+    'offset': 0,
+    'limit': 1000  # 最大1000条
+})
+```
+
+### 3. 订单簿数据
+
+```python
+# 订阅订单簿数据
+await connection.subscribe_to_market_data('EURUSD', {
+    'type': 'books'
+})
+
+# 订单簿数据回调处理
+@connection.on_book_data_received
+async def process_book(book_data):
+    """
+    book_data结构：
+    {
+        'symbol': 'EURUSD',          # 交易对
+        'time': '2023-01-01T00:00:00.000Z',  # 时间
+        'brokerTime': '2023-01-01 00:00:00', # 券商时间
+        'bids': [                    # 买单列表
+            {'price': 1.1000, 'volume': 1.0},
+            {'price': 1.0999, 'volume': 2.0}
+        ],
+        'asks': [                    # 卖单列表
+            {'price': 1.1001, 'volume': 1.0},
+            {'price': 1.1002, 'volume': 2.0}
+        ]
+    }
+    """
+    print(f"收到订单簿数据: {book_data}")
+```
+
+### 4. 市场信息查询
+
+```python
+# 获取交易品种规格
+specification = await connection.get_symbol_specification('EURUSD')
+
+# 获取交易品种价格
+price = await connection.get_symbol_price('EURUSD')
+
+# 获取所有可交易的交易品种
+symbols = await connection.get_symbols()
+```
+
+### 5. 订阅管理
+
+```python
+# 取消单个品种订阅
+await connection.unsubscribe_from_market_data('EURUSD')
+
+# 取消所有订阅
+await connection.unsubscribe_from_all_market_data()
+
+# 刷新订阅（在连接中断后重新订阅）
+await connection.refresh_market_data_subscriptions()
+```
+
+## 完整的流数据处理示例
+
+```python
+async def handle_streaming_data():
+    try:
+        # 1. 初始化连接
+        connection = await account.get_streaming_connection()
+        await connection.connect()
+        await connection.wait_synchronized()
+        
+        # 2. 设置数据处理回调
+        @connection.on_connected
+        async def on_connected():
+            print("连接已建立")
+            
+        @connection.on_disconnected
+        async def on_disconnected():
+            print("连接已断开")
+            
+        @connection.on_error
+        async def on_error(error):
+            print(f"发生错误: {error}")
+            
+        @connection.on_candle_data_received
+        async def on_candle(candle):
+            print(f"K线数据: {candle}")
+            
+        @connection.on_tick_data_received
+        async def on_tick(tick):
+            print(f"Tick数据: {tick}")
+            
+        @connection.on_book_data_received
+        async def on_book(book):
+            print(f"订单簿数据: {book}")
+        
+        # 3. 订阅数据
+        symbols = ['EURUSD', 'GBPUSD', 'USDJPY']
+        for symbol in symbols:
+            await connection.subscribe_to_market_data(symbol, {
+                'type': ['ticks', 'candles', 'books'],
+                'timeframes': ['1m', '5m']
+            })
+        
+        # 4. 保持连接活跃
+        while True:
+            if not await connection.is_connected():
+                await connection.connect()
+                await connection.wait_synchronized()
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        print(f"错误: {e}")
+    finally:
+        await connection.close()
+
+# 运行流数据处理
+asyncio.run(handle_streaming_data())
+```
+
+## 错误处理和连接管理
+
+```python
+# 重试选项
+class StreamingRetryOptions:
+    retries: int = 5                  # 最大重试次数
+    minDelayInSeconds: float = 1      # 最小重试延迟
+    maxDelayInSeconds: float = 30     # 最大重试延迟
+    subscriptionRetryIntervalInSeconds: float = 60  # 订阅重试间隔
+
+# 连接状态管理
+async def maintain_connection():
+    while True:
+        try:
+            if not connection.is_connected():
+                print("连接断开，尝试重连...")
+                await connection.connect()
+                await connection.wait_synchronized()
+                await connection.refresh_market_data_subscriptions()
+                
+        except Exception as e:
+            print(f"连接错误: {e}")
+            await asyncio.sleep(5)
+            continue
+            
+        await asyncio.sleep(1)
+
+# 连接状态检查
+is_connected = await connection.is_connected()
+is_synchronized = await connection.is_synchronized()
+
+# 获取连接健康状态
+health_status = await connection.get_health_status()
+
+# 等待特定状态
+await connection.wait_synchronized(timeout=300)  # 等待同步，超时5分钟
+await connection.wait_connected(timeout=60)      # 等待连接，超时1分钟
+
+# 获取服务器时间
+server_time = await connection.get_server_time()
+
+# 获取账户信息
+account_information = await connection.get_account_information()
+
+# 资源清理
+async def cleanup():
+    try:
+        # 取消所有订阅
+        await connection.unsubscribe_from_all_market_data()
+        # 关闭连接
+        await connection.close()
+    except Exception as e:
+        print(f"清理时发生错误: {e}")

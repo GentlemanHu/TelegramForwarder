@@ -6,12 +6,17 @@ import json
 from aiohttp import web
 from pathlib import Path
 from typing import Optional, Dict, Any
-from main import ForwardBot, Config
-from trade_processor.ai_analyzer import AIAnalyzer
-from trade_processor.position_manager import PositionManager
-from trade_processor.signal_processor import SignalProcessor
-from trade_processor.trade_config import TradeConfig
-from trade_processor.trade_manager import TradeManager
+
+# 本地导入
+from config import Config
+from main import ForwardBot
+from trade_processor import (
+    TradeManager,
+    PositionManager,
+    SignalProcessor,
+    TradeConfig,
+    AIAnalyzer
+)
 
 
 class SimulatedEvent:
@@ -170,6 +175,37 @@ class AsyncBotLauncher:
         except asyncio.CancelledError:
             await runner.cleanup()
 
+    async def run_hft_mode(self):
+        """Run in HFT mode"""
+        if not await self.initialize_components():
+            logging.error("Failed to initialize components for HFT mode")
+            return
+            
+        try:
+            # 启用HFT模式
+            self.trade_config.hft.enabled = True
+            
+            # 启动HFT
+            if not await self.trade_manager.start_hft_mode():
+                logging.error("Failed to start HFT mode")
+                return
+                
+            logging.info(f"HFT mode started with symbols: {self.trade_config.hft.symbols}")
+            
+            # 保持运行
+            while True:
+                await asyncio.sleep(60)  # 每分钟检查一次
+                
+        except Exception as e:
+            logging.error(f"Error in HFT mode: {e}")
+            if hasattr(e, '__dict__'):
+                logging.error(f"Error details: {e.__dict__}")
+            raise
+        finally:
+            # 确保停止HFT模式
+            if self.trade_manager:
+                await self.trade_manager.stop_hft_mode()
+
     async def stop(self):
         """Stop all components"""
         try:
@@ -185,35 +221,35 @@ class AsyncBotLauncher:
 async def main():
     parser = argparse.ArgumentParser(description='Trading Bot Launcher')
     parser.add_argument('--mode', 
-                       choices=['telegram', 'ui'], 
+                       choices=['telegram', 'ui', 'hft'], 
                        default='telegram',
-                       help='Run mode: telegram (listen to Telegram) or ui (local UI interface)')
-
+                       help='Run mode: telegram (listen to Telegram), ui (local UI interface), or hft (High Frequency Trading)')
+    parser.add_argument('--symbols', type=str, help='Trading symbols for HFT mode (comma-separated)')
+    
     args = parser.parse_args()
     launcher = AsyncBotLauncher()
 
     try:
-        if args.mode == 'telegram':
-                # 设置日志
-            logging.basicConfig(
-                level=logging.INFO,
-                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                handlers=[
-                    logging.StreamHandler(),
-                    logging.FileHandler('bot.log')
-                ]
-            )
+        # 设置日志
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(),
+                logging.FileHandler(f'{args.mode}.log')
+            ]
+        )
+
+        if args.mode == 'hft':
+            # 如果指定了交易对，更新配置
+            if args.symbols:
+                launcher.trade_config.hft.symbols = args.symbols.split(',')
+            await launcher.run_hft_mode()
+        elif args.mode == 'telegram':
             await launcher.run_telegram_mode()
         else:
-            logging.basicConfig(
-                level=logging.INFO,
-                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                handlers=[
-                    logging.StreamHandler(),
-                    logging.FileHandler('web_ui.log')
-                ]
-            )
             await launcher.run_ui_mode()
+            
     except Exception as e:
         logging.error(f"Fatal error: {e}")
         raise

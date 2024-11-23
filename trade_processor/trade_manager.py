@@ -13,48 +13,54 @@ class TradeSynchronizationListener(SynchronizationListener):
         self.trade_manager = trade_manager
         self.trade_manager._connected_instances = set()
 
+    async def on_candle_data_received(self, instance_index: str, candle_data: Dict):
+        """Called when candle data is received"""
+        await self.trade_manager._handle_candle_update(candle_data)
+
+    async def on_pending_order_updated(self, instance_index: str, order: Dict):
+        """Called when pending order is updated"""
+        await self.trade_manager._handle_order_update(order)
+
     async def on_connected(self, instance_index: str, replicas: int):
         """Called when connection established"""
-        if instance_index not in self.trade_manager._connected_instances:
-            self.trade_manager._connected_instances.add(instance_index)
-            if len(self.trade_manager._connected_instances) == replicas:
-                logging.info(f"All MetaApi instances connected successfully (total: {replicas})")
-            else:
-                logging.debug(f"Connected to MetaApi, instance: {instance_index}, replicas: {replicas}")
+        self.trade_manager._connected_instances.add(instance_index)
+        logging.info(f"Instance {instance_index} connected")
 
     async def on_disconnected(self, instance_index: str):
         """Called when connection dropped"""
-        self.trade_manager._connected_instances.discard(instance_index)
-        logging.info(f"Disconnected from MetaApi, instance: {instance_index}")
+        if instance_index in self.trade_manager._connected_instances:
+            self.trade_manager._connected_instances.remove(instance_index)
+        logging.info(f"Instance {instance_index} disconnected")
 
     async def on_symbol_specifications_updated(
-        self, 
-        instance_index: str,
-        specifications: List[Dict],
-        removed_symbols: List[str]
-    ):
+            self, 
+            instance_index: str,
+            specifications: List[Dict],
+            removed_symbols: List[str]
+        ):
         """Called when specifications updated"""
         pass
 
     async def on_symbol_prices_updated(
-        self,
-        instance_index: str,
-        prices: List[Dict],
-        equity: Optional[float] = None,
-        margin: Optional[float] = None,
-        free_margin: Optional[float] = None,
-        margin_level: Optional[float] = None,
-        account_currency_exchange_rate: Optional[float] = None
-    ):
+            self,
+            instance_index: str,
+            prices: List[Dict],
+            equity: Optional[float] = None,
+            margin: Optional[float] = None,
+            free_margin: Optional[float] = None,
+            margin_level: Optional[float] = None,
+            account_currency_exchange_rate: Optional[float] = None
+        ):
         """Called when symbol prices updated"""
         try:
             for price in prices:
                 symbol = price.get('symbol')
+                logging.debug(f"Price update for {symbol}: Bid={price.get('bid', 'N/A')}, Ask={price.get('ask', 'N/A')}")
                 if symbol in self.trade_manager._price_listeners:
                     for listener in self.trade_manager._price_listeners[symbol]:
                         await listener(price)
         except Exception as e:
-            logging.error(f"-----Error handling price update: {e}----trademanager")
+            logging.error(f"Error handling price update: {e}")
 
     async def on_account_information_updated(
         self,
@@ -75,6 +81,11 @@ class TradeSynchronizationListener(SynchronizationListener):
                 account_information['freeMargin'] = 0.0
             if account_information.get('marginLevel') is None:
                 account_information['marginLevel'] = 0.0
+                
+            logging.info(f"Account Update - Balance: {account_information['balance']:.2f}, "
+                        f"Equity: {account_information['equity']:.2f}, "
+                        f"Profit: {account_information['profit']:.2f}, "
+                        f"Free Margin: {account_information['freeMargin']:.2f}")
         except Exception as e:
             logging.error(f"Error handling account information update: {e}")
 
@@ -110,13 +121,6 @@ class TradeSynchronizationListener(SynchronizationListener):
             await self.trade_manager._handle_orders_replaced(orders)
         except Exception as e:
             logging.error(f"Error handling orders replaced: {e}")
-
-    async def on_pending_order_updated(self, instance_index: str, order: Dict):
-        """Called when pending order updated"""
-        try:
-            await self.trade_manager._handle_order_update(order)
-        except Exception as e:
-            logging.error(f"Error handling order update: {e}")
 
     async def on_pending_order_completed(self, instance_index: str, order_id: str):
         """Called when pending order completed"""
@@ -178,8 +182,9 @@ class TradeManager:
         self.sync_listener = None
         self._subscribed_symbols = set()
         self.active_streams = {}  # 新增：跟踪活跃的流订阅
+        self._candle_data = {}  # 存储每个symbol的最新K线数据
+        self._candle_listeners: Dict[str, List] = {}  # K线数据监听器
 
-    
     async def _handle_position_update(self, position: Dict):
         """Handle position updates with profit validation"""
         try:
@@ -189,6 +194,12 @@ class TradeManager:
             if position.get('profit') is None:
                 position['profit'] = 0.0
                 
+            logging.info(f"Position Update - ID: {position.get('id')}, "
+                        f"Symbol: {position.get('symbol')}, "
+                        f"Type: {position.get('type')}, "
+                        f"Volume: {position.get('volume')}, "
+                        f"Profit: {position.get('profit'):.2f}")
+                        
             for listener in self._position_listeners:
                 try:
                     await listener(position)
@@ -220,41 +231,37 @@ class TradeManager:
             if not self._price_listeners[symbol]:
                 self._price_listeners.pop(symbol)
 
-
-    async def get_current_price(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """获取当前市场价格"""
+    async def get_current_price(self, symbol: str) -> Optional[Dict]:
+        """获取当前价格"""
         if not self._initialized:
             await self.initialize()
             
         try:
-            try:
+            if symbol not in self._subscribed_symbols:
                 await self.subscribe_to_market_data(symbol)
-            except Exception as e:
-                logging.warning(f"Failed to subscribe to market data: {e}")
-            
+                
             terminal_state = self.connection.terminal_state
             if not terminal_state:
-                logging.error("Terminal state not available")
+                logging.error(f"No terminal state available for {symbol}")
                 return None
                 
             price_info = terminal_state.price(symbol)
-            if not price_info or price_info.get('bid') is None or price_info.get('ask') is None:
-                logging.warning(f"Incomplete price data for {symbol}: ask={price_info.get('ask')}, bid={price_info.get('bid')}")
+            if not price_info or price_info.get('ask') is None or price_info.get('bid') is None:
+                logging.error(f"Invalid price data for {symbol}")
                 return None
                 
+            spread = price_info['ask'] - price_info['bid']
             return {
                 'symbol': symbol,
                 'bid': price_info['bid'],
                 'ask': price_info['ask'],
-                'spread': price_info['ask'] - price_info['bid'],
+                'spread': spread,
                 'time': datetime.now().isoformat()
             }
             
         except Exception as e:
-            logging.error(f"Error getting current price: {e}")
+            logging.error(f"Error getting price for {symbol}: {e}")
             return None
-
-
 
     async def get_positions(self) -> List[Dict[str, Any]]:
         """Get all positions"""
@@ -331,7 +338,6 @@ class TradeManager:
             logging.error(f"Error closing position: {e}")
             return None
 
-
     async def modify_position(
         self,
         position_id: str,
@@ -365,140 +371,97 @@ class TradeManager:
             logging.error(f"Error modifying position: {e}")
             return None
 
-    async def subscribe_to_market_data(self, symbol: str):
+    async def subscribe_to_market_data(self, symbol: str) -> bool:
         """订阅市场数据"""
-        try:
-            if not self._initialized:
-                await self.initialize()
-
-            if symbol in self._subscribed_symbols:
-                return
-
-            if self.connection:
-                await self.connection.subscribe_to_market_data(
-                    symbol,
-                    ['quotes']  
-                )
-                self._subscribed_symbols.add(symbol)
-                
-                logging.info(f"Subscribed to market data for {symbol}")
-            else:
-                logging.error("Connection not available")
-
-        except Exception as e:
-            logging.error(f"Error subscribing to market data for {symbol}: {e}")
-
-    def add_position_update_callback(self, callback):
-        """添加仓位更新回调"""
-        if not hasattr(self, '_position_callbacks'):
-            self._position_callbacks = set()
-        self._position_callbacks.add(callback)
-
-    def add_order_update_callback(self, callback):
-        """添加订单更新回调"""
-        if not hasattr(self, '_order_callbacks'):
-            self._order_callbacks = set()
-        self._order_callbacks.add(callback)
-
-    async def _handle_position_update(self, position_data: Dict[str, Any]):
-        """处理仓位更新"""
-        if hasattr(self, '_position_callbacks'):
-            for callback in self._position_callbacks:
-                try:
-                    await callback(position_data)
-                except Exception as e:
-                    logging.error(f"Error in position callback: {e}")
-
-    async def _handle_order_update(self, order_data: Dict[str, Any]):
-        """处理订单更新"""
-        if hasattr(self, '_order_callbacks'):
-            for callback in self._order_callbacks:
-                try:
-                    await callback(order_data)
-                except Exception as e:
-                    logging.error(f"Error in order callback: {e}")
-
-
-    async def _subscribe_to_updates(self):
-        """Subscribe to market updates and order/position changes"""
-        try:
-            self.connection.add_order_listener(self._handle_order_update)
-            self.connection.add_position_listener(self._handle_position_update)
-            
-            terminal_state = self.connection.terminal_state
-            positions = terminal_state.positions
-            
-            for position in positions:
-                symbol = position['symbol']
-                if symbol not in self._price_listeners:
-                    await self.subscribe_to_market_data(symbol)
-                    
-        except Exception as e:
-            logging.error(f"Error subscribing to updates: {e}")
-
- 
-    def add_order_listener(self, callback):
-        """Add order update listener"""
-        self._order_listeners.append(callback)
+        if not self._initialized:
+            await self.initialize()
         
-    def add_position_listener(self, callback):
-        """Add position update listener"""
-        self._position_listeners.append(callback)
-
-    async def _handle_order_update(self, order_data: Dict[str, Any]):
-        """Handle order updates"""
         try:
-            for listener in self._order_listeners:
-                await listener(order_data)
+            if symbol in self._subscribed_symbols:
+                return True
+            
+            # 使用正确的订阅方法
+            await self.connection.subscribe_to_market_data(
+                symbol,
+                [{'type': 'quotes'}, {'type': 'candles', 'timeframe': '1m'}]
+            )
+            self._subscribed_symbols.add(symbol)
+            logging.info(f"Successfully subscribed to {symbol}")
+            return True
+            
         except Exception as e:
-            logging.error(f"Error handling order update: {e}")
+            logging.error(f"Failed to subscribe to {symbol}: {e}")
+            return False
 
-    async def _handle_price_update(self, price_data: Dict[str, Any]):
-        """Handle price updates"""
+    async def unsubscribe_from_market_data(self, symbol: str) -> bool:
+        """取消订阅市场数据"""
+        if not self._initialized:
+            await self.initialize()
+        
+        if symbol not in self._subscribed_symbols:
+            return True
+        
         try:
-            symbol = price_data['symbol']
-            for listener in self._price_listeners.values():
-                await listener(symbol, price_data)
+            # 使用正确的取消订阅方法
+            await self.connection.unsubscribe_from_market_data(
+                symbol,
+                [{'type': 'quotes'}, {'type': 'candles', 'timeframe': '1m'}]
+            )
+            self._subscribed_symbols.remove(symbol)
+            logging.info(f"Successfully unsubscribed from {symbol}")
+            return True
         except Exception as e:
-            logging.error(f"---trade_manager---hande_price_update---Error handling price update: {e}")
+            logging.error(f"Failed to unsubscribe from {symbol}: {e}")
+            return False
 
 
-    async def cancel_order(self, order_id: str) -> bool:
-        """Cancel pending order"""
+            
+    async def get_candles(self, symbol: str, timeframe: str = '1m', limit: int = 100) -> Optional[List[Dict]]:
+        """Get candle data for a symbol"""
         if not self._initialized:
             await self.initialize()
             
         try:
-            await self.connection.cancel_order(order_id)
-            return True
-        except Exception as e:
-            logging.error(f"Error canceling order: {e}")
-            return False
+            if symbol not in self._subscribed_symbols:
+                logging.info(f"Subscribing to market data for {symbol}")
+                await self.subscribe_to_market_data(symbol)
+                # Wait a bit for initial data
+                await asyncio.sleep(1)
 
+            # Initialize candle storage if not exists
+            if symbol not in self._candle_data:
+                self._candle_data[symbol] = []
 
-    async def cleanup(self):
-        """Cleanup resources"""
-        try:
-            if self.connection:
-                self.connection.remove_synchronization_listener(self.sync_listener)
-                
-                terminal_state = self.connection.terminal_state
-                if terminal_state:
-                    for symbol in list(self._price_listeners.keys()):
-                        await self.connection.unsubscribe_from_market_data(symbol)
-                
-                await self.connection.close()
-                
-            self._price_listeners.clear()
-            self._position_listeners.clear()
-            self._order_listeners.clear()
+            # If we have accumulated candles, return them
+            if self._candle_data[symbol]:
+                logging.debug(f"Using {len(self._candle_data[symbol])} accumulated candles for {symbol}")
+                return self._candle_data[symbol]
             
-            self._initialized = False
-            self.sync_complete.clear()
+            # If no data, try to create a candle from current price
+            try:
+                price = await self.get_current_price(symbol)
+                if price:
+                    current_time = datetime.now().timestamp()
+                    candle = {
+                        'time': current_time,
+                        'open': price['ask'],
+                        'high': price['ask'],
+                        'low': price['bid'],
+                        'close': price['ask'],
+                        'volume': 0,
+                        'timeframe': timeframe
+                    }
+                    self._candle_data[symbol] = [candle]
+                    logging.debug(f"Created single candle from current price for {symbol}")
+                    return [candle]
+            except Exception as e:
+                logging.error(f"Failed to get current price for {symbol}: {str(e)}")
             
+            return None
+                
         except Exception as e:
-            logging.error(f"Error in cleanup: {e}")
-
+            logging.error(f"Failed to get candles for {symbol}: {str(e)}")
+            return None
 
     async def get_account_info(self) -> Optional[Dict[str, Any]]:
         """Get account information"""
@@ -511,7 +474,6 @@ class TradeManager:
         except Exception as e:
             logging.error(f"Error getting account info: {e}")
             return None
-
 
     async def get_pending_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get pending orders with optional symbol filter"""
@@ -657,7 +619,6 @@ class TradeManager:
             logging.error(f"Error getting position: {e}")
             return None
 
-
     async def get_account_information(self) -> Optional[Dict[str, Any]]:
         """获取账户信息"""
         if not self._initialized:
@@ -698,7 +659,6 @@ class TradeManager:
         except Exception as e:
             logging.error(f"Error handling order completed: {e}")
 
-
     async def get_order(self, order_id: str) -> Optional[Dict[str, Any]]:
         """Get order by ID"""
         if not self._initialized:
@@ -716,8 +676,6 @@ class TradeManager:
         except Exception as e:
             logging.error(f"Error getting order: {e}")
             return None
-
-
 
     def generate_order_id(self, symbol: str, round_id: Optional[str] = None) -> Dict[str, str]:
         """
@@ -765,6 +723,10 @@ class TradeManager:
             await self.initialize()
             
         try:
+            logging.info(f"Placing {entry_type} {direction} order for {symbol} - "
+                        f"Volume: {volume}, Entry: {entry_price or 'Market'}, "
+                        f"SL: {stop_loss}, TP: {take_profits}")
+            
             id_info = self.generate_order_id(symbol, round_id)
             
             options = {'clientId': id_info['clientId']}
@@ -825,12 +787,8 @@ class TradeManager:
             return result
             
         except Exception as e:
-            logging.error(f"Error placing order: {e}")
-            if hasattr(e, '__dict__'):
-                logging.error(f"Error details: {e.__dict__}")
-            return None
-
-
+            logging.error(f"Failed to place order: {str(e)}")
+            raise
 
     async def calculate_smart_layers(
         self,
@@ -925,7 +883,6 @@ class TradeManager:
             logging.error(f"Error calculating smart layers: {e}")
             return None
 
-
     async def _wait_order_completion(self, order_id: str, timeout: float = 30) -> bool:
         """等待订单完成"""
         try:
@@ -993,7 +950,6 @@ class TradeManager:
             logging.error(f"Error initializing trade manager: {e}")
             return False
 
-
     async def wait_synchronized(self, timeout: float = 300) -> bool:
         """Wait for synchronization with timeout"""
         try:
@@ -1006,158 +962,99 @@ class TradeManager:
             logging.warning("Synchronization timeout")
             return False
 
-    async def _calculate_atr(self, symbol: str, period: int = 14) -> float:
-        """计算ATR"""
+    async def start_hft_mode(self) -> bool:
+        """启动HFT模式"""
         try:
-            # 获取K线数据
-            candles = await self.connection.get_candles(
-                symbol=symbol,
-                timeframe='1h',
-                limit=period + 1
-            )
+            from .strategies.hft_scalping import HFTScalpingStrategy
             
-            if not candles or len(candles) < period:
-                return 100.0  # 默认值
+            # 确保已初始化
+            if not self._initialized:
+                await self.initialize()
+                await self.wait_synchronized()
+            
+            # 创建HFT策略实例
+            self._hft_strategy = HFTScalpingStrategy(self)
+            
+            # 获取配置的交易对
+            symbols = self.config.hft.symbols
+            if not symbols:
+                logging.error("No symbols configured for HFT mode")
+                return False
                 
-            true_ranges = []
-            for i in range(1, len(candles)):
-                high = float(candles[i]['high'])
-                low = float(candles[i]['low'])
-                prev_close = float(candles[i-1]['close'])
+            # 订阅市场数据
+            for symbol in symbols:
+                await self.subscribe_to_market_data(symbol)
                 
-                tr = max(
-                    high - low,
-                    abs(high - prev_close),
-                    abs(low - prev_close)
-                )
-                true_ranges.append(tr)
-                
-            atr = sum(true_ranges) / len(true_ranges)
-            return atr
+            # 启动策略
+            await self._hft_strategy.start(symbols)
+            logging.info(f"HFT mode started with symbols: {symbols}")
+            return True
             
         except Exception as e:
-            logging.error(f"Error calculating ATR: {e}")
-            return 100.0  # 默认值
+            logging.error(f"Error starting HFT mode: {e}")
+            return False
             
-    async def _get_volume_profile(self, symbol: str) -> Dict[str, float]:
-        """获取成交量分布"""
+    async def stop_hft_mode(self) -> bool:
+        """停止HFT模式"""
         try:
-            # 获取最近24小时的成交量数据
-            candles = await self.connection.get_candles(
-                symbol=symbol,
-                timeframe='1h',
-                limit=24
-            )
-            
-            if not candles:
-                return {'default': 1.0}
+            if hasattr(self, '_hft_strategy'):
+                await self._hft_strategy.stop()
                 
-            volume_profile = {}
-            total_volume = sum(float(c['volume']) for c in candles)
-            
-            for candle in candles:
-                price = float(candle['close'])
-                volume = float(candle['volume'])
-                volume_profile[str(price)] = volume / total_volume
-                
-            return volume_profile
-            
-        except Exception as e:
-            logging.error(f"Error getting volume profile: {e}")
-            return {'default': 1.0}
-            
-    async def _get_support_resistance(self, symbol: str) -> List[float]:
-        """获取支撑阻力位"""
-        try:
-            # 获取4小时K线数据
-            candles = await self.connection.get_candles(
-                symbol=symbol,
-                timeframe='4h',
-                limit=100
-            )
-            
-            if not candles:
-                return []
-                
-            prices = [float(c['close']) for c in candles]
-            pivots = []
-            
-            # 简单的支撑阻力算法
-            for i in range(2, len(prices)-2):
-                if (prices[i] > prices[i-1] > prices[i-2] and 
-                    prices[i] > prices[i+1] > prices[i+2]):
-                    pivots.append(prices[i])  # 阻力位
-                elif (prices[i] < prices[i-1] < prices[i-2] and 
-                      prices[i] < prices[i+1] < prices[i+2]):
-                    pivots.append(prices[i])  # 支撑位
+                # 取消订阅市场数据
+                for symbol in self.config.hft.symbols:
+                    await self.unsubscribe_from_market_data(symbol)
                     
-            return sorted(pivots)
+                delattr(self, '_hft_strategy')
+                logging.info("HFT mode stopped")
+                return True
+            return False
             
         except Exception as e:
-            logging.error(f"Error getting support resistance: {e}")
-            return []
-            
-    def _calculate_layer_volumes(
-        self,
-        volume_profile: Dict[str, float],
-        entry_range: tuple,
-        layers: int
-    ) -> List[float]:
-        """计算每个层级的仓位大小"""
+            logging.error(f"Error stopping HFT mode: {e}")
+            return False
+
+    def add_candle_listener(self, symbol: str, callback):
+        """添加K线数据监听器"""
+        if symbol not in self._candle_listeners:
+            self._candle_listeners[symbol] = []
+        self._candle_listeners[symbol].append(callback)
+
+    def remove_candle_listener(self, symbol: str, callback):
+        """移除K线数据监听器"""
+        if symbol in self._candle_listeners:
+            try:
+                self._candle_listeners[symbol].remove(callback)
+            except ValueError:
+                pass
+
+    async def _handle_candle_update(self, candle_data: Dict[str, Any]):
+        """处理K线数据更新"""
         try:
-            # 默认的量能分配比例
-            default_scale = [0.4, 0.3, 0.2, 0.1]
+            symbol = candle_data.get('symbol')
+            if not symbol:
+                logging.warning("Received candle update without symbol")
+                return
+
+            # Initialize candle storage if not exists
+            if symbol not in self._candle_data:
+                self._candle_data[symbol] = []
+
+            # Add new candle to storage
+            self._candle_data[symbol].append(candle_data)
             
-            # 如果层级数量不同，调整比例
-            if layers != len(default_scale):
-                # 生成新的比例
-                total = sum(1/(i+1) for i in range(layers))
-                scale = [1/((i+1)*total) for i in range(layers)]
-            else:
-                scale = default_scale[:layers]
-                
-            return scale
+            # Keep only the last 100 candles
+            if len(self._candle_data[symbol]) > 100:
+                self._candle_data[symbol] = self._candle_data[symbol][-100:]
+
+            logging.debug(f"Updated candle data for {symbol}, total candles: {len(self._candle_data[symbol])}")
             
+            # Notify listeners
+            if symbol in self._candle_listeners:
+                for listener in self._candle_listeners[symbol]:
+                    try:
+                        await listener(candle_data)
+                    except Exception as e:
+                        logging.error(f"Error in candle listener: {e}")
+                        
         except Exception as e:
-            logging.error(f"Error calculating layer volumes: {e}")
-            return [1.0/layers] * layers
-            
-    def _optimize_entry_prices(
-        self,
-        entry_range: tuple,
-        support_resistance: List[float],
-        layers: int,
-        direction: str
-    ) -> List[float]:
-        """优化入场价格"""
-        try:
-            start_price, end_price = entry_range
-            price_range = abs(end_price - start_price)
-            
-            # 过滤在范围内的支撑阻力位
-            valid_levels = [p for p in support_resistance 
-                          if start_price <= p <= end_price]
-            
-            if len(valid_levels) >= layers:
-                # 如果有足够的支撑阻力位，直接使用
-                return sorted(valid_levels[:layers], 
-                            reverse=(direction=='sell'))
-                            
-            # 否则均匀分布
-            step = price_range / (layers - 1) if layers > 1 else 0
-            prices = []
-            
-            for i in range(layers):
-                if direction == 'buy':
-                    price = end_price - (i * step)
-                else:
-                    price = start_price + (i * step)
-                prices.append(price)
-                
-            return prices
-            
-        except Exception as e:
-            logging.error(f"Error optimizing entry prices: {e}")
-            # 均匀分布作为后备方案
-            step = abs(entry_range[1] - entry_range[0]) / (layers - 1)
-            return [entry_range[0] + i*step for i in range(layers)]
+            logging.error(f"Error handling candle update: {e}")
