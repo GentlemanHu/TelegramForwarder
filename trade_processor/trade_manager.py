@@ -11,13 +11,20 @@ from .trade_config import TradeConfig
 class TradeSynchronizationListener(SynchronizationListener):
     def __init__(self, trade_manager: 'TradeManager'):
         self.trade_manager = trade_manager
+        self.trade_manager._connected_instances = set()
 
     async def on_connected(self, instance_index: str, replicas: int):
         """Called when connection established"""
-        logging.info(f"Connected to MetaApi, instance: {instance_index}, replicas: {replicas}")
+        if instance_index not in self.trade_manager._connected_instances:
+            self.trade_manager._connected_instances.add(instance_index)
+            if len(self.trade_manager._connected_instances) == replicas:
+                logging.info(f"All MetaApi instances connected successfully (total: {replicas})")
+            else:
+                logging.debug(f"Connected to MetaApi, instance: {instance_index}, replicas: {replicas}")
 
     async def on_disconnected(self, instance_index: str):
         """Called when connection dropped"""
+        self.trade_manager._connected_instances.discard(instance_index)
         logging.info(f"Disconnected from MetaApi, instance: {instance_index}")
 
     async def on_symbol_specifications_updated(
@@ -56,7 +63,6 @@ class TradeSynchronizationListener(SynchronizationListener):
     ):
         """Called when account information updated"""
         try:
-            # Handle None values in account information
             if account_information.get('profit') is None:
                 account_information['profit'] = 0.0
             if account_information.get('balance') is None:
@@ -177,15 +183,12 @@ class TradeManager:
     async def _handle_position_update(self, position: Dict):
         """Handle position updates with profit validation"""
         try:
-            # Ensure position has required fields
             if not isinstance(position, dict):
                 return
                 
-            # Handle None profit
             if position.get('profit') is None:
                 position['profit'] = 0.0
                 
-            # Notify listeners
             for listener in self._position_listeners:
                 try:
                     await listener(position)
@@ -224,7 +227,6 @@ class TradeManager:
             await self.initialize()
             
         try:
-            # 尝试订阅，但不阻止继续执行
             try:
                 await self.subscribe_to_market_data(symbol)
             except Exception as e:
@@ -235,17 +237,9 @@ class TradeManager:
                 logging.error("Terminal state not available")
                 return None
                 
-            # 等待价格数据
-            max_attempts = 5
-            price_info = None
-            for _ in range(max_attempts):
-                price_info = terminal_state.price(symbol)
-                if price_info:
-                    break
-                await asyncio.sleep(0.1)
-                
-            if not price_info:
-                logging.error(f"Unable to get price for {symbol}")
+            price_info = terminal_state.price(symbol)
+            if not price_info or price_info.get('bid') is None or price_info.get('ask') is None:
+                logging.warning(f"Incomplete price data for {symbol}: ask={price_info.get('ask')}, bid={price_info.get('bid')}")
                 return None
                 
             return {
@@ -350,18 +344,14 @@ class TradeManager:
             await self.initialize()
             
         try:
-            # 移除options参数，直接使用基本参数
             result = await self.connection.modify_position(
                 position_id=position_id,
                 stop_loss=stop_loss,
                 take_profit=take_profit
             )
             
-            # 如果需要设置trailing stop，使用单独的调用
             if trailing_stop:
                 try:
-                    # 这里假设MetaApi提供了设置trailing stop的方法
-                    # 具体方法名和参数需要根据实际API调整
                     await self.connection.modify_position(
                         position_id=position_id,
                         trailing_stop_loss=trailing_stop['distance']
@@ -385,10 +375,9 @@ class TradeManager:
                 return
 
             if self.connection:
-                # 使用正确的订阅格式
                 await self.connection.subscribe_to_market_data(
                     symbol,
-                    ['quotes']  # 简化订阅格式
+                    ['quotes']  
                 )
                 self._subscribed_symbols.add(symbol)
                 
@@ -433,11 +422,9 @@ class TradeManager:
     async def _subscribe_to_updates(self):
         """Subscribe to market updates and order/position changes"""
         try:
-            # Add listeners for order and position updates
             self.connection.add_order_listener(self._handle_order_update)
             self.connection.add_position_listener(self._handle_position_update)
             
-            # Subscribe to market data for actively traded symbols
             terminal_state = self.connection.terminal_state
             positions = terminal_state.positions
             
@@ -493,20 +480,15 @@ class TradeManager:
         """Cleanup resources"""
         try:
             if self.connection:
-                # Remove synchronization listener
-                if self.sync_listener:
-                    self.connection.remove_synchronization_listener(self.sync_listener)
+                self.connection.remove_synchronization_listener(self.sync_listener)
                 
-                # Unsubscribe from market data
                 terminal_state = self.connection.terminal_state
                 if terminal_state:
                     for symbol in list(self._price_listeners.keys()):
                         await self.connection.unsubscribe_from_market_data(symbol)
                 
-                # Close connection
                 await self.connection.close()
                 
-            # Clear listeners
             self._price_listeners.clear()
             self._position_listeners.clear()
             self._order_listeners.clear()
@@ -559,12 +541,10 @@ class TradeManager:
             await self.initialize()
             
         try:
-            # Get current price
             price_info = await self.get_current_price(symbol)
             if not price_info:
                 return None
                 
-            # Calculate margin
             margin = await self.connection.calculate_margin({
                 'symbol': symbol,
                 'type': 'ORDER_TYPE_BUY' if direction == 'buy' else 'ORDER_TYPE_SELL',
@@ -641,7 +621,6 @@ class TradeManager:
             await self.initialize()
             
         try:
-            # First modify stop loss and take profit if needed
             if stop_loss is not None or take_profit is not None:
                 await self.modify_position(
                     position_id=position_id,
@@ -649,7 +628,6 @@ class TradeManager:
                     take_profit=take_profit
                 )
             
-            # Then perform partial close if needed
             position = await self.get_position(position_id)
             if position and position['volume'] > volume:
                 close_volume = position['volume'] - volume
@@ -686,7 +664,6 @@ class TradeManager:
             await self.initialize()
             
         try:
-            # 使用terminal_state获取账户信息而不是直接调用connection
             terminal_state = self.connection.terminal_state
             return terminal_state.account_information
         except Exception as e:
@@ -699,7 +676,6 @@ class TradeManager:
             for position in positions:
                 if position.get('profit') is None:
                     position['profit'] = 0.0
-                # 通知所有position监听器
                 for listener in self._position_listeners:
                     await listener(position)
         except Exception as e:
@@ -709,7 +685,6 @@ class TradeManager:
         """处理orders替换事件"""
         try:
             for order in orders:
-                # 通知所有order监听器
                 for listener in self._order_listeners:
                     await listener(order)
         except Exception as e:
@@ -753,16 +728,12 @@ class TradeManager:
             timestamp = int(datetime.now().timestamp())
             short_timestamp = str(timestamp)[-4:]  # 只使用最后4位
             
-            # 为symbol创建短代码
             symbol_code = ''.join(c for c in symbol if c.isalpha())[:3].upper()
             
-            # 创建短的clientId
             client_id = f"T_{symbol_code}_{short_timestamp}"  # 例如: "TXAU1234"
             
-            # 如果有round_id，创建短注释
             comment = None
             if round_id:
-                # 从round_id提取数字部分
                 round_num = ''.join(filter(str.isdigit, round_id))[-4:]  # 只使用最后4位
                 comment = f"R{round_num}"  # 例如: "R1234"
             
@@ -772,7 +743,6 @@ class TradeManager:
             }
         except Exception as e:
             logging.error(f"Error generating order ID: {e}")
-            # 返回fallback值
             return {
                 'clientId': f"T{int(time.time())%10000}",
                 'comment': None
@@ -795,10 +765,8 @@ class TradeManager:
             await self.initialize()
             
         try:
-            # 生成订单ID和注释
             id_info = self.generate_order_id(symbol, round_id)
             
-            # 构建订单选项
             options = {'clientId': id_info['clientId']}
             if id_info['comment']:
                 options['comment'] = id_info['comment']
@@ -863,6 +831,101 @@ class TradeManager:
             return None
 
 
+
+    async def calculate_smart_layers(
+        self,
+        symbol: str,
+        direction: str,
+        entry_range: tuple,  # (entry_start, entry_end)
+        target_prices: List[float],
+        stop_loss: float,
+        options: Dict = None
+    ):
+        """智能计算交易分层"""
+        try:
+            logging.info(
+                f"开始计算智能分层:\n"
+                f"Symbol: {symbol}\n"
+                f"Direction: {direction}\n"
+                f"Entry Range: {entry_range}\n"
+                f"Target Prices: {target_prices}\n"
+                f"Stop Loss: {stop_loss}\n"
+                f"Options: {options}"
+            )
+            
+            # 1. 获取市场数据
+            atr = await self._calculate_atr(symbol)
+            volume_profile = await self._get_volume_profile(symbol)
+            support_resistance = await self._get_support_resistance(symbol)
+            
+            logging.info(
+                f"市场数据分析:\n"
+                f"ATR: {atr}\n"
+                f"Support/Resistance Levels: {support_resistance}\n"
+                f"Volume Profile Summary: {sum(volume_profile.values()) if volume_profile else 0}"
+            )
+            
+            # 2. 计算层级数量和间距
+            if options and 'count' in options:
+                # 如果指定了层数，使用指定的层数
+                suggested_layers = options['count']
+            else:
+                # 否则使用ATR计算建议层数
+                volatility = atr * 1.5  # 使用1.5倍ATR作为基准间距
+                total_range = abs(entry_range[1] - entry_range[0])
+                suggested_layers = max(2, min(5, int(total_range / volatility)))
+            
+            logging.info(
+                f"层级计算:\n"
+                f"Total Range: {abs(entry_range[1] - entry_range[0])}\n"
+                f"Suggested Layers: {suggested_layers}\n"
+                f"Distribution: {options.get('distribution', 'smart')}"
+            )
+            
+            # 3. 根据成交量分布调整仓位大小
+            if options and options.get('distribution') == 'equal':
+                # 如果指定了均匀分布，使用均匀分布
+                layer_volumes = [1.0 / suggested_layers] * suggested_layers
+            else:
+                # 否则使用智能分配
+                layer_volumes = self._calculate_layer_volumes(
+                    volume_profile, 
+                    entry_range, 
+                    suggested_layers
+                )
+            
+            # 4. 优化入场价格
+            entry_prices = self._optimize_entry_prices(
+                entry_range,
+                support_resistance,
+                suggested_layers,
+                direction
+            )
+            
+            result = {
+                'layers': suggested_layers,
+                'entry_prices': entry_prices,
+                'volumes': layer_volumes,
+                'take_profits': target_prices,
+                'stop_loss': stop_loss
+            }
+            
+            logging.info(
+                f"分层计算结果:\n"
+                f"Number of Layers: {suggested_layers}\n"
+                f"Entry Prices: {entry_prices}\n"
+                f"Layer Volumes: {layer_volumes}\n"
+                f"Take Profits: {target_prices}\n"
+                f"Stop Loss: {stop_loss}"
+            )
+            
+            return result
+            
+        except Exception as e:
+            logging.error(f"Error calculating smart layers: {e}")
+            return None
+
+
     async def _wait_order_completion(self, order_id: str, timeout: float = 30) -> bool:
         """等待订单完成"""
         try:
@@ -883,11 +946,9 @@ class TradeManager:
             return True
             
         try:
-            # Set logging levels
             logging.getLogger('socketio.client').setLevel(logging.WARNING)
             logging.getLogger('engineio.client').setLevel(logging.WARNING)
             
-            # Get account
             self.account = await self.api.metatrader_account_api.get_account(
                 self.config.account_id
             )
@@ -902,19 +963,15 @@ class TradeManager:
             logging.info("Waiting for account connection...")
             await self.account.wait_connected()
             
-            # Create streaming connection
             self.connection = self.account.get_streaming_connection()
             if not self.connection:
                 raise Exception("Could not create streaming connection")
             
-            # Add synchronization listener
             self.sync_listener = TradeSynchronizationListener(self)
             self.connection.add_synchronization_listener(self.sync_listener)
             
-            # Connect
             await self.connection.connect()
             
-            # Wait for synchronization
             try:
                 logging.info("Waiting for synchronization...")
                 await asyncio.wait_for(
@@ -924,7 +981,6 @@ class TradeManager:
                 self.sync_complete.set()
                 logging.info("Account synchronized successfully")
                 
-                # Initialize health monitor
                 self.health_monitor = self.connection.health_monitor
                 
             except asyncio.TimeoutError:
@@ -949,3 +1005,159 @@ class TradeManager:
         except asyncio.TimeoutError:
             logging.warning("Synchronization timeout")
             return False
+
+    async def _calculate_atr(self, symbol: str, period: int = 14) -> float:
+        """计算ATR"""
+        try:
+            # 获取K线数据
+            candles = await self.connection.get_candles(
+                symbol=symbol,
+                timeframe='1h',
+                limit=period + 1
+            )
+            
+            if not candles or len(candles) < period:
+                return 100.0  # 默认值
+                
+            true_ranges = []
+            for i in range(1, len(candles)):
+                high = float(candles[i]['high'])
+                low = float(candles[i]['low'])
+                prev_close = float(candles[i-1]['close'])
+                
+                tr = max(
+                    high - low,
+                    abs(high - prev_close),
+                    abs(low - prev_close)
+                )
+                true_ranges.append(tr)
+                
+            atr = sum(true_ranges) / len(true_ranges)
+            return atr
+            
+        except Exception as e:
+            logging.error(f"Error calculating ATR: {e}")
+            return 100.0  # 默认值
+            
+    async def _get_volume_profile(self, symbol: str) -> Dict[str, float]:
+        """获取成交量分布"""
+        try:
+            # 获取最近24小时的成交量数据
+            candles = await self.connection.get_candles(
+                symbol=symbol,
+                timeframe='1h',
+                limit=24
+            )
+            
+            if not candles:
+                return {'default': 1.0}
+                
+            volume_profile = {}
+            total_volume = sum(float(c['volume']) for c in candles)
+            
+            for candle in candles:
+                price = float(candle['close'])
+                volume = float(candle['volume'])
+                volume_profile[str(price)] = volume / total_volume
+                
+            return volume_profile
+            
+        except Exception as e:
+            logging.error(f"Error getting volume profile: {e}")
+            return {'default': 1.0}
+            
+    async def _get_support_resistance(self, symbol: str) -> List[float]:
+        """获取支撑阻力位"""
+        try:
+            # 获取4小时K线数据
+            candles = await self.connection.get_candles(
+                symbol=symbol,
+                timeframe='4h',
+                limit=100
+            )
+            
+            if not candles:
+                return []
+                
+            prices = [float(c['close']) for c in candles]
+            pivots = []
+            
+            # 简单的支撑阻力算法
+            for i in range(2, len(prices)-2):
+                if (prices[i] > prices[i-1] > prices[i-2] and 
+                    prices[i] > prices[i+1] > prices[i+2]):
+                    pivots.append(prices[i])  # 阻力位
+                elif (prices[i] < prices[i-1] < prices[i-2] and 
+                      prices[i] < prices[i+1] < prices[i+2]):
+                    pivots.append(prices[i])  # 支撑位
+                    
+            return sorted(pivots)
+            
+        except Exception as e:
+            logging.error(f"Error getting support resistance: {e}")
+            return []
+            
+    def _calculate_layer_volumes(
+        self,
+        volume_profile: Dict[str, float],
+        entry_range: tuple,
+        layers: int
+    ) -> List[float]:
+        """计算每个层级的仓位大小"""
+        try:
+            # 默认的量能分配比例
+            default_scale = [0.4, 0.3, 0.2, 0.1]
+            
+            # 如果层级数量不同，调整比例
+            if layers != len(default_scale):
+                # 生成新的比例
+                total = sum(1/(i+1) for i in range(layers))
+                scale = [1/((i+1)*total) for i in range(layers)]
+            else:
+                scale = default_scale[:layers]
+                
+            return scale
+            
+        except Exception as e:
+            logging.error(f"Error calculating layer volumes: {e}")
+            return [1.0/layers] * layers
+            
+    def _optimize_entry_prices(
+        self,
+        entry_range: tuple,
+        support_resistance: List[float],
+        layers: int,
+        direction: str
+    ) -> List[float]:
+        """优化入场价格"""
+        try:
+            start_price, end_price = entry_range
+            price_range = abs(end_price - start_price)
+            
+            # 过滤在范围内的支撑阻力位
+            valid_levels = [p for p in support_resistance 
+                          if start_price <= p <= end_price]
+            
+            if len(valid_levels) >= layers:
+                # 如果有足够的支撑阻力位，直接使用
+                return sorted(valid_levels[:layers], 
+                            reverse=(direction=='sell'))
+                            
+            # 否则均匀分布
+            step = price_range / (layers - 1) if layers > 1 else 0
+            prices = []
+            
+            for i in range(layers):
+                if direction == 'buy':
+                    price = end_price - (i * step)
+                else:
+                    price = start_price + (i * step)
+                prices.append(price)
+                
+            return prices
+            
+        except Exception as e:
+            logging.error(f"Error optimizing entry prices: {e}")
+            # 均匀分布作为后备方案
+            step = abs(entry_range[1] - entry_range[0]) / (layers - 1)
+            return [entry_range[0] + i*step for i in range(layers)]

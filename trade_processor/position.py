@@ -18,6 +18,7 @@ class Position:
     volume: float
     entry_type: str  # 'market' or 'limit'
     status: PositionStatus = PositionStatus.PENDING
+    order_id: Optional[str] = None  # 关联的订单ID
     
     # Prices
     entry_price: Optional[float] = None
@@ -84,6 +85,7 @@ class Position:
             'round_id': self.round_id,
             'realized_profit': self.realized_profit,
             'unrealized_profit': self.unrealized_profit,
+            'order_id': self.order_id,
             'created_at': self.created_at.isoformat(),
             'opened_at': self.opened_at.isoformat() if self.opened_at else None,
             'closed_at': self.closed_at.isoformat() if self.closed_at else None,

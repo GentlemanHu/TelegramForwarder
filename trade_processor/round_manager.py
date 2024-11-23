@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Set
@@ -9,6 +10,7 @@ from enum import Enum
 from .position import Position, PositionStatus
 from .signal_tracker import SignalTracker
 from .tp_manager import DynamicTPManager, TPStatus, TPLevel
+from .market_monitor import MarketMonitor
 
 class RoundStatus(Enum):
     PENDING = "pending"
@@ -46,6 +48,7 @@ class RoundManager:
         self.lock = asyncio.Lock()
         self.signal_tracker = SignalTracker()
         self.tp_manager = DynamicTPManager(self)
+        self.market_monitor = MarketMonitor(trade_manager)
         
         self._price_listeners: Dict[str, Set] = {}
         self._position_listeners: Set = set()
@@ -147,7 +150,21 @@ class RoundManager:
         except Exception as e:
             logging.error(f"Error handling order completion: {e}")
 
+    async def on_positions_replaced(self, instance_index: str, positions: List[Dict]):
+        """Called when positions are replaced"""
+        try:
+            for position in positions:
+                await self._handle_position_update(position)
+        except Exception as e:
+            logging.error(f"Error handling positions replacement: {e}")
 
+    async def on_pending_orders_replaced(self, instance_index: str, orders: List[Dict]):
+        """Called when pending orders are replaced"""
+        try:
+            for order in orders:
+                await self._handle_order_update(order)
+        except Exception as e:
+            logging.error(f"Error handling orders replacement: {e}")
 
     async def on_symbol_price_updated(
         self,
@@ -240,6 +257,74 @@ class RoundManager:
         except Exception as e:
             logging.error(f"----on_symbol_prices_updated---round_manager---Error handling price updates: {e}")
 
+    async def _handle_price_update(self, symbol: str, price_data: Dict[str, Any]):
+        """处理价格更新"""
+        try:
+            # 查找相关的交易rounds
+            relevant_rounds = [
+                round_id for round_id, trade_round in self.rounds.items()
+                if trade_round.symbol == symbol and 
+                trade_round.status != RoundStatus.CLOSED
+            ]
+
+            for round_id in relevant_rounds:
+                async with self.lock:
+                    trade_round = self.rounds.get(round_id)
+                    if not trade_round:
+                        continue
+
+                    # 获取当前价格
+                    ask_price = price_data.get('ask')
+                    bid_price = price_data.get('bid')
+                    
+                    if ask_price is None or bid_price is None:
+                        logging.warning(f"Incomplete price data for {symbol}: ask={ask_price}, bid={bid_price}")
+                        continue
+                        
+                    current_price = float(ask_price if trade_round.direction == 'buy' else bid_price)
+
+                    # 获取活跃仓位
+                    active_positions = [
+                        pos.to_dict() for pos in trade_round.positions.values()
+                        if pos.status == PositionStatus.ACTIVE
+                    ]
+
+                    # 处理止盈触发
+                    tp_actions = await self.tp_manager.handle_tp_hit(
+                        round_id,
+                        current_price,
+                        active_positions
+                    )
+
+                    # 处理追踪止损
+                    for position in active_positions:
+                        tsl_action = await self.tp_manager.update_trailing_stop(
+                            position['id'],
+                            current_price,
+                            position['direction']
+                        )
+                        if tsl_action:
+                            tp_actions.append(tsl_action)
+
+                    # 执行所有动作
+                    for action in tp_actions:
+                        if action['action'] == 'close_position':
+                            await self.connection.close_position(
+                                action['position_id']
+                            )
+                        elif action['action'] == 'modify_position':
+                            await self.connection.modify_position(
+                                position_id=action['position_id'],
+                                stop_loss=action.get('stop_loss'),
+                                take_profit=action.get('take_profit')
+                            )
+
+                    # 更新round状态
+                    await self._update_round_status(trade_round)
+
+        except Exception as e:
+            logging.error(f"Error handling price update for {symbol}: {e}")
+
     async def on_candles_updated(
         self,
         instance_index: str,
@@ -296,86 +381,6 @@ class RoundManager:
     ):
         """Called when order books updated"""
         pass
-
-    async def _setup_price_monitoring(self, symbol: str):
-        """设置价格监控"""
-        try:
-            if symbol in self._subscribed_symbols:
-                return
-
-            # 创建价格监听器
-            async def price_listener(price_data: Dict[str, Any]):
-                await self._handle_price_update(symbol, price_data)
-
-            # 订阅市场数据
-            if self.connection:
-                await self.connection.subscribe_to_market_data(
-                    symbol,
-                    ['quotes']  # 简化订阅，只要quotes
-                )
-                
-                if symbol not in self._price_listeners:
-                    self._price_listeners[symbol] = set()
-                self._price_listeners[symbol].add(price_listener)
-                self._subscribed_symbols.add(symbol)
-                logging.info(f"Price monitoring setup for {symbol}")
-
-        except Exception as e:
-            logging.error(f"Error setting up price monitoring for {symbol}: {e}")
-
-    async def _handle_price_update(self, symbol: str, price_data: Dict[str, Any]):
-        """处理价格更新"""
-        try:
-            # 查找相关的交易rounds
-            relevant_rounds = [
-                round_id for round_id, trade_round in self.rounds.items()
-                if trade_round.symbol == symbol and 
-                trade_round.status != RoundStatus.CLOSED
-            ]
-
-            for round_id in relevant_rounds:
-                async with self.lock:
-                    trade_round = self.rounds.get(round_id)
-                    if not trade_round:
-                        continue
-
-                    # 获取当前价格
-                    current_price = (
-                        price_data.get('ask')
-                        if trade_round.direction == 'buy'
-                        else price_data.get('bid')
-                    )
-                    
-                    if current_price is None:
-                        continue
-
-                    # 处理止盈触发
-                    actions = await self.tp_manager.handle_tp_hit(
-                        round_id,
-                        current_price,
-                        list(trade_round.positions.values())
-                    )
-
-                    # 执行止盈动作
-                    for action in actions:
-                        if action['action'] == 'close_position':
-                            await self.trade_manager.close_position(
-                                action['position_id']
-                            )
-                        elif action['action'] == 'modify_position':
-                            await self.trade_manager.modify_position(
-                                position_id=action['position_id'],
-                                stop_loss=action.get('stop_loss'),
-                                take_profit=action.get('take_profit')
-                            )
-
-                    # 更新round状态
-                    await self._update_round_status(trade_round)
-
-        except Exception as e:
-            logging.error(f"___handle_price_update__round_manager__Error handling price update for {symbol}: {e}")
-
-
 
     async def on_history_orders_synchronized(
         self, 
@@ -876,112 +881,252 @@ class RoundManager:
             logging.error(f"Error getting layer take profits: {e}")
             return [base_take_profits[0]] if base_take_profits else []
 
-
-
-    async def _handle_tp_hit(self, trade_round: TradeRound, tp_level: TPLevel, terminal_state):
-        """Handle take profit hit"""
+    async def _handle_position_removed(self, position_data: Dict[str, Any]):
+        """处理仓位移除事件"""
         try:
-            # Mark TP level as hit
-            tp_level.hit_count += 1
-            
-            # Find positions to close
-            positions_to_close = []
-            remaining_positions = []
-            
-            for pos_id in trade_round.positions:
-                position = next(
-                    (p for p in terminal_state.positions if p['id'] == pos_id),
-                    None
-                )
-                if not position:
-                    continue
-                    
-                # Check if position's take profit matches current level
-                if position.get('takeProfit') == tp_level.price:
-                    positions_to_close.append(position)
-                else:
-                    remaining_positions.append(position)
-                        
-            # Close positions at this TP level
-            for position in positions_to_close:
-                await self.trade_manager.close_position(position['id'])
-                    
-            # Cancel remaining limit orders if this was the last TP
-            if not any(tp.active for tp in trade_round.tp_levels if tp != tp_level):
-                # Cancel pending orders
-                for order in terminal_state.orders:
-                    if order.get('positionId') in trade_round.positions:
-                        await self.trade_manager.cancel_order(order['id'])
-                    
-            # Set breakeven for remaining positions if needed
-            if positions_to_close and remaining_positions:
-                await self._set_positions_breakeven(remaining_positions)
+            position_id = position_data.get('id')
+            if not position_id:
+                return
+                
+            # 查找并更新相关的交易轮次
+            for round_id, trade_round in self.rounds.items():
+                if position_id in trade_round.positions:
+                    position = trade_round.positions[position_id]
+                    position.status = PositionStatus.CLOSED
+                    await self._handle_position_closure(round_id, position_id)
+                    break
                     
         except Exception as e:
-            logging.error(f"Error handling TP hit: {e}")
+            logging.error(f"Error in _handle_position_removed: {e}")
 
-    async def _set_positions_breakeven(self, positions: List[Dict]):
-        """Set positions to breakeven"""
+    async def _handle_order_removed(self, order_data: Dict[str, Any]):
+        """处理订单移除事件"""
         try:
-            for position in positions:
-                entry_price = position.get('openPrice')
-                if entry_price:
-                    await self.trade_manager.modify_position(
-                        position_id=position['id'],
-                        stop_loss=entry_price
+            order_id = order_data.get('id')
+            if not order_id:
+                return
+                
+            # 处理订单移除逻辑
+            await self._handle_order_status_change(order_id, 'removed')
+            
+        except Exception as e:
+            logging.error(f"Error in _handle_order_removed: {e}")
+
+    async def _handle_order_completed(self, order_data: Dict[str, Any]):
+        """处理订单完成事件"""
+        try:
+            order_id = order_data.get('id')
+            if not order_id:
+                return
+                
+            # 处理订单完成逻辑
+            await self._handle_order_status_change(order_id, 'completed')
+            
+        except Exception as e:
+            logging.error(f"Error in _handle_order_completed: {e}")
+
+    async def _handle_order_status_change(self, order_id: str, status: str):
+        """处理订单状态变化"""
+        try:
+            # 根据订单状态执行相应操作
+            if status == 'completed':
+                # 检查是否是止盈订单
+                for round_id, trade_round in self.rounds.items():
+                    for position in trade_round.positions.values():
+                        if position.tp_order_id == order_id:
+                            await self._handle_tp_hit(trade_round, position)
+                            break
+            elif status == 'removed':
+                # 可能需要重新设置止盈止损
+                for round_id, trade_round in self.rounds.items():
+                    for position in trade_round.positions.values():
+                        if (position.tp_order_id == order_id or 
+                            position.sl_order_id == order_id):
+                            await self._reset_position_orders(position)
+                            break
+                
+        except Exception as e:
+            logging.error(f"Error in _handle_order_status_change: {e}")
+
+    async def _handle_tp_hit(self, trade_round: TradeRound, position: Position):
+        """处理止盈触发"""
+        try:
+            # 获取当前价格
+            price_data = await self.connection.get_symbol_price(position.symbol)
+            if not price_data:
+                return
+                
+            current_price = float(price_data.get('ask' if position.type == 'buy' else 'bid', 0))
+
+            # 处理止盈触发
+            actions = await self.tp_manager.handle_tp_hit(
+                trade_round.id,
+                current_price,
+                [pos.to_dict() for pos in trade_round.positions.values() 
+                 if pos.status == PositionStatus.ACTIVE]
+            )
+            
+            # 执行动作
+            for action in actions:
+                if action['action'] == 'close_position':
+                    await self.connection.close_position(action['position_id'])
+                elif action['action'] == 'modify_position':
+                    await self.connection.modify_position(
+                        action['position_id'],
+                        stop_loss=action.get('stop_loss'),
+                        take_profit=action.get('take_profit')
                     )
+                    
         except Exception as e:
-            logging.error(f"Error setting positions to breakeven: {e}")
+            logging.error(f"Error in _handle_tp_hit: {e}")
 
-    async def _cancel_pending_orders(self, trade_round: TradeRound):
-        """Cancel pending limit orders"""
+    async def _reset_position_orders(self, position: Position):
+        """重新设置仓位的订单"""
         try:
-            positions = trade_round.active_positions.values()
-            for pos in positions:
-                if pos.entry_type == 'limit' and pos.status == 'pending':
-                    await self.trade_manager.cancel_order(pos.id)
+            # 重新设置止盈止损订单
+            await self.connection.modify_position(
+                position.id,
+                stop_loss=position.stop_loss,
+                take_profit=position.take_profit
+            )
         except Exception as e:
-            logging.error(f"Error canceling pending orders: {e}")
+            logging.error(f"Error in _reset_position_orders: {e}")
 
-    async def _set_positions_breakeven(self, positions: List['Position']):
-        """Set positions to breakeven"""
+    async def _handle_position_closure(self, round_id: str, closed_position_id: str):
+        """处理仓位关闭后的操作"""
         try:
-            for pos in positions:
-                await self.trade_manager.modify_position(
-                    position_id=pos.id,
-                    stop_loss=pos.entry_price
-                )
+            trade_round = self.rounds.get(round_id)
+            if not trade_round:
+                return
+                
+            # 获取关闭的仓位信息
+            closed_position = trade_round.positions.get(closed_position_id)
+            if not closed_position:
+                return
+
+            # 获取当前仓位的 TP 水平
+            if not closed_position.take_profits:
+                return
+
+            hit_tp_price = closed_position.close_price
+            hit_tp_level = None
+
+            # 确定是哪个 TP 水平被触发
+            for tp_level in trade_round.tp_levels:
+                if abs(hit_tp_price - tp_level.price) < 0.0001:  # 考虑浮点数精度
+                    hit_tp_level = tp_level
+                    break
+
+            if not hit_tp_level:
+                return
+
+            # 处理剩余活跃仓位
+            await self._handle_remaining_positions(trade_round, hit_tp_level)
+
         except Exception as e:
-            logging.error(f"Error setting positions to breakeven: {e}")
+            logging.error(f"Error handling position closure: {e}")
+
+    async def _handle_remaining_positions(self, trade_round: TradeRound, hit_tp_level: TPLevel):
+        """处理剩余仓位的止盈止损设置"""
+        try:
+            active_positions = [pos for pos in trade_round.positions.values() 
+                              if pos.status == PositionStatus.ACTIVE]
+
+            if not active_positions:
+                return
+
+            # 如果是 TP1 被触发
+            if hit_tp_level == trade_round.tp_levels[0]:
+                # 将所有活跃仓位移动到保本位
+                for pos in active_positions:
+                    await self.trade_manager.modify_position(
+                        position_id=pos.id,
+                        stop_loss=pos.entry_price  # 移动到保本位
+                    )
+                logging.info(f"Moved {len(active_positions)} positions to breakeven after TP1 hit")
+
+            # 更新剩余仓位的止盈水平
+            remaining_tps = [tp for tp in trade_round.tp_levels 
+                           if tp.price > hit_tp_level.price]
+
+            if remaining_tps:
+                # 根据仓位层级分配不同的止盈
+                for pos in active_positions:
+                    tp_index = min(pos.layer_index, len(remaining_tps) - 1)
+                    new_tp = remaining_tps[tp_index].price
+                    await self.trade_manager.modify_position(
+                        position_id=pos.id,
+                        take_profit=new_tp
+                    )
+                    logging.info(f"Updated TP for position {pos.id} to {new_tp}")
+
+        except Exception as e:
+            logging.error(f"Error handling remaining positions: {e}")
 
     async def _handle_order_update(self, order_data: Dict[str, Any]):
-        """Handle order updates"""
-        position_id = order_data.get('positionId')
-        if not position_id:
-            return
-            
-        async with self.lock:
-            # Find the round containing this position
-            for round_id, trade_round in self.rounds.items():
-                if position_id in trade_round.positions:
-                    await self._update_round_status(trade_round)
+        """处理订单更新"""
+        try:
+            order_id = order_data.get('id')
+            if not order_id:
+                return
+
+            # 找到相关的交易轮次
+            round_id = None
+            for r_id, trade_round in self.rounds.items():
+                if any(pos.order_id == order_id for pos in trade_round.positions.values()):
+                    round_id = r_id
                     break
+
+            if not round_id:
+                return
+
+            # 如果TP1已触发，取消所有limit订单
+            trade_round = self.rounds.get(round_id)
+            if trade_round and trade_round.tp_levels:
+                first_tp = trade_round.tp_levels[0]
+                if first_tp.status == TPStatus.TRIGGERED:
+                    if order_data.get('type') == 'limit' and order_data.get('state') == 'placed':
+                        await self.connection.cancel_order(order_id)
+                        logging.info(f"Cancelled limit order {order_id} after TP1 hit")
+
+        except Exception as e:
+            logging.error(f"Error handling order update: {e}")
 
     async def _handle_position_update(self, position_data: Dict[str, Any]):
-        """Handle position updates"""
-        position_id = position_data.get('id')
-        if not position_id:
-            return
-            
-        async with self.lock:
-            # Update position in relevant round
+        """处理仓位更新"""
+        try:
+            position_id = position_data.get('id')
+            if not position_id:
+                return
+
+            # 找到相关的交易轮次
             for round_id, trade_round in self.rounds.items():
                 if position_id in trade_round.positions:
-                    # Update position data
-                    trade_round.positions[position_id].update(position_data)
+                    position = trade_round.positions[position_id]
+                    
+                    # 准备更新数据
+                    update_data = {
+                        'status': PositionStatus.CLOSED if position_data.get('state') == 'closed' else position.status,
+                        'entry_price': float(position_data.get('openPrice', position.entry_price or 0)),
+                        'close_price': float(position_data.get('closePrice', 0)) if position_data.get('closePrice') else None,
+                        'realized_profit': float(position_data.get('profit', 0)),
+                        'volume': float(position_data.get('volume', position.volume))
+                    }
+                    
+                    # 更新仓位状态
+                    position.update(update_data)
+                    
+                    # 如果仓位已关闭，处理相关操作
+                    if position.status == PositionStatus.CLOSED:
+                        await self._handle_position_closure(round_id, position_id)
+                    
+                    # 更新round状态
                     await self._update_round_status(trade_round)
+                    logging.info(f"Updated position {position_id} in round {round_id}")
                     break
 
+        except Exception as e:
+            logging.error(f"Error handling position update: {e}")
 
     async def handle_signal(self, signal: Dict[str, Any]) -> Optional[str]:
         """处理交易信号"""
@@ -991,150 +1136,200 @@ class RoundManager:
                 logging.error("Signal missing symbol")
                 return None
 
-            # 添加到信号跟踪系统
-            round_id = self.signal_tracker.add_signal(symbol, signal)
+            # 生成round_id
+            round_id = str(uuid.uuid4())
 
-            if signal.get('type') == 'entry':
-                return await self._handle_entry_signal(signal, round_id)
-            elif signal.get('type') == 'modify':
-                return await self._handle_modify_signal(signal, round_id)
-            elif signal.get('type') == 'update':
-                return await self._handle_update_signal(signal, round_id)
+            # 解析信号参数
+            entry_type = signal.get('entry_type', 'limit')  # 默认使用限价单
+            direction = signal.get('direction', 'buy')
+            volume = signal.get('volume', 0.01)
+            stop_loss = signal.get('stop_loss')
+            take_profits = signal.get('take_profits', [])
+            
+            # 智能模式参数
+            entry_start = signal.get('entry_start')
+            entry_end = signal.get('entry_end')
+            execution_mode = signal.get('execution_mode', 'standard')  # 默认使用标准模式
+            
+            # 创建交易轮次
+            trade_round = TradeRound(
+                id=round_id,
+                symbol=symbol,
+                direction=direction,
+                created_at=datetime.now(),
+                positions={},
+                tp_levels=[TPLevel(price=tp) for tp in take_profits],
+                stop_loss=stop_loss,
+                status=RoundStatus.PENDING,
+                metadata=signal.get('metadata', {})
+            )
+            
+            self.rounds[round_id] = trade_round
+            
+            # 根据执行模式处理信号
+            if execution_mode == 'smart' and entry_start and entry_end:
+                # 使用智能监控模式
+                success = await self.market_monitor.start_monitoring(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_range=(entry_start, entry_end),
+                    target_prices=take_profits,
+                    stop_loss=stop_loss,
+                    round_id=round_id,
+                    total_volume=volume,
+                    options=signal.get('options')
+                )
+                
+                if not success:
+                    logging.error(f"Failed to start market monitoring for round {round_id}")
+                    self.rounds.pop(round_id)
+                    return None
+                    
+                logging.info(
+                    f"Started smart monitoring for {symbol} {direction} "
+                    f"between {entry_start}-{entry_end}"
+                )
+                
             else:
-                logging.error(f"Unknown signal type: {signal.get('type')}")
-                return None
-
+                # 使用标准模式
+                await self._handle_entry_signal(signal, round_id)
+            
+            return round_id
+            
         except Exception as e:
             logging.error(f"Error handling signal: {e}")
+            if round_id in self.rounds:
+                self.rounds.pop(round_id)
             return None
 
     async def _handle_entry_signal(self, signal: Dict[str, Any], round_id: str) -> Optional[str]:
         """处理入场信号"""
         try:
-            # 检查是否是已有round的更新
-            existing_round = self.rounds.get(round_id)
-            if existing_round:
-                # 更新现有round的配置
-                await self._update_round_config(round_id, signal)
-                return round_id
-
-            # 创建新round
+            # 基本参数验证
+            symbol = signal.get('symbol')
+            direction = signal.get('direction')
+            volume = signal.get('volume', self.trade_manager.config.min_lot_size)
+            stop_loss = signal.get('stop_loss')
+            take_profits = signal.get('take_profits', [])
+            
+            if not all([symbol, direction]):
+                logging.error("Missing required signal parameters")
+                return None
+                
+            # 验证交易量
+            if volume < self.trade_manager.config.min_lot_size:
+                volume = self.trade_manager.config.min_lot_size
+                logging.warning(f"Volume adjusted to minimum: {volume}")
+            elif volume > self.trade_manager.config.max_lot_size:
+                logging.error(f"Volume {volume} exceeds maximum {self.trade_manager.config.max_lot_size}")
+                return None
+            
+            # 创建交易轮次
             trade_round = TradeRound(
                 id=round_id,
-                symbol=signal['symbol'],
-                direction=signal['action'],
+                symbol=symbol,
+                direction=direction,
                 created_at=datetime.now(),
                 positions={},
-                tp_levels=[TPLevel(price=tp) for tp in signal.get('take_profits', [])],
-                stop_loss=signal.get('stop_loss'),
+                tp_levels=[TPLevel(price=tp) for tp in take_profits],
+                stop_loss=stop_loss,
                 status=RoundStatus.PENDING,
-                metadata={'signal': signal}
+                metadata=signal.get('metadata', {})
             )
-
-            async with self.lock:
-                self.rounds[round_id] = trade_round
-                await self._setup_price_monitoring(trade_round)
-
+            
+            # 根据执行类型处理
+            entry_type = signal.get('entry_type', 'limit')
+            
+            if entry_type == 'limit':
+                # 标准限价单模式
+                entry_price = signal.get('entry_price')
+                if not entry_price:
+                    logging.error("Limit order requires entry_price")
+                    return None
+                    
+                # 下单
+                order_result = await self.trade_manager.place_order(
+                    symbol=symbol,
+                    direction=direction,
+                    volume=volume,
+                    entry_type='limit',
+                    entry_price=entry_price,
+                    stop_loss=stop_loss,
+                    take_profits=take_profits,
+                    round_id=round_id,
+                    options={'slippage': signal.get('slippage', self.trade_manager.config.default_slippage)}
+                )
+                
+                if not order_result:
+                    return None
+                    
+            elif entry_type == 'smart':
+                # 智能分层模式
+                entry_start = signal.get('entry_start')
+                entry_end = signal.get('entry_end')
+                
+                if not all([entry_start, entry_end]):
+                    logging.error("Smart entry requires entry_start and entry_end")
+                    return None
+                
+                # 验证层级间距
+                price_range = abs(entry_end - entry_start)
+                min_distance = self.trade_manager.config.layer_settings['min_distance']
+                max_distance = self.trade_manager.config.layer_settings['max_distance']
+                
+                if price_range < min_distance:
+                    logging.error(f"Price range {price_range} is too small (min: {min_distance})")
+                    return None
+                elif price_range > max_distance:
+                    logging.warning(f"Price range {price_range} exceeds max distance {max_distance}")
+                    
+                # 启动市场监控
+                success = await self.market_monitor.start_monitoring(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_range=(entry_start, entry_end),
+                    target_prices=take_profits,
+                    stop_loss=stop_loss,
+                    round_id=round_id,
+                    total_volume=volume,
+                    options={
+                        **signal.get('options', {}),
+                        'slippage': signal.get('slippage', self.trade_manager.config.default_slippage),
+                        'volume_scale': signal.get('volume_scale', self.trade_manager.config.layer_settings['volume_scale'])
+                    }
+                )
+                
+                if not success:
+                    logging.error(f"Failed to start market monitoring for round {round_id}")
+                    return None
+                
+            else:
+                # 市价单模式
+                order_result = await self.trade_manager.place_order(
+                    symbol=symbol,
+                    direction=direction,
+                    volume=volume,
+                    entry_type='market',
+                    stop_loss=stop_loss,
+                    take_profits=take_profits,
+                    round_id=round_id,
+                    options={'slippage': signal.get('slippage', self.trade_manager.config.default_slippage)}
+                )
+                
+                if not order_result:
+                    return None
+            
+            # 保存交易轮次
+            self.rounds[round_id] = trade_round
+            await self._setup_price_monitoring(trade_round)
+            
             return round_id
-
+            
         except Exception as e:
             logging.error(f"Error handling entry signal: {e}")
+            if round_id in self.rounds:
+                self.rounds.pop(round_id)
             return None
-
-    async def _handle_modify_signal(self, signal: Dict[str, Any], round_id: str) -> bool:
-        """处理修改信号"""
-        try:
-            async with self.lock:
-                trade_round = self.rounds.get(round_id)
-                if not trade_round:
-                    logging.error(f"Round {round_id} not found")
-                    return False
-
-                # 更新止损
-                if 'stop_loss' in signal:
-                    trade_round.stop_loss = signal['stop_loss']
-                    for pos in trade_round.positions.values():
-                        await self.trade_manager.modify_position(
-                            position_id=pos.id,
-                            stop_loss=signal['stop_loss'],
-                            round_id=round_id
-                        )
-
-                # 更新获利目标
-                if 'take_profits' in signal:
-                    new_tps = [TPLevel(price=tp) for tp in signal['take_profits']]
-                    await self._update_take_profits(trade_round, new_tps)
-
-                # 处理分层配置
-                if 'layers' in signal:
-                    await self._handle_layer_config(trade_round, signal['layers'])
-
-                return True
-
-        except Exception as e:
-            logging.error(f"Error handling modify signal: {e}")
-            return False
-
-    async def _handle_update_signal(self, signal: Dict[str, Any], round_id: str) -> bool:
-        """处理更新信号（补充配置）"""
-        try:
-            async with self.lock:
-                trade_round = self.rounds.get(round_id)
-                if not trade_round:
-                    logging.error(f"Round {round_id} not found")
-                    return False
-
-                # 应用更新
-                if 'stop_loss' in signal or 'take_profits' in signal:
-                    await self._update_round_config(round_id, signal)
-
-                # 标记信号已处理
-                self.signal_tracker.mark_processed(
-                    round_id,
-                    datetime.now()
-                )
-
-                return True
-
-        except Exception as e:
-            logging.error(f"Error handling update signal: {e}")
-            return False
-
-    async def _update_round_config(self, round_id: str, config: Dict[str, Any]) -> bool:
-        """更新round配置"""
-        try:
-            trade_round = self.rounds.get(round_id)
-            if not trade_round:
-                return False
-
-            changes = {}
-
-            # 更新止损
-            if 'stop_loss' in config:
-                changes['stop_loss'] = config['stop_loss']
-                trade_round.stop_loss = config['stop_loss']
-
-            # 更新获利目标
-            if 'take_profits' in config:
-                new_tps = [TPLevel(price=tp) for tp in config['take_profits']]
-                changes['take_profits'] = config['take_profits']
-                trade_round.tp_levels = new_tps
-
-            # 应用更改到所有相关仓位
-            for pos in trade_round.positions.values():
-                await self.trade_manager.modify_position(
-                    position_id=pos.id,
-                    stop_loss=changes.get('stop_loss'),
-                    take_profit=changes['take_profits'][0] if changes.get('take_profits') else None,
-                    round_id=round_id
-                )
-
-            return True
-
-        except Exception as e:
-            logging.error(f"Error updating round config: {e}")
-            return False
-
 
     async def cleanup(self):
         """Cleanup resources"""
@@ -1153,3 +1348,104 @@ class RoundManager:
             
         except Exception as e:
             logging.error(f"Error in RoundManager cleanup: {e}")
+
+    async def _handle_entry_signal(self, signal: Dict, round_id: str = None):
+        """处理入场信号"""
+        try:
+            # 生成唯一的round_id
+            if not round_id:
+                round_id = f"R_{signal['symbol']}_{int(datetime.now().timestamp())}"
+                
+            logging.info(f"Processing entry signal for round {round_id}")
+            logging.info(f"Signal details: {signal}")
+            
+            # 创建交易轮次
+            round = TradeRound(
+                id=round_id,
+                symbol=signal['symbol'],
+                direction=signal['action'],
+                created_at=datetime.now(),
+                positions={},
+                tp_levels=[],
+                stop_loss=signal.get('stop_loss'),
+                metadata={'signal': signal}
+            )
+            
+            # 处理止盈设置
+            if signal.get('take_profits'):
+                for price in signal['take_profits']:
+                    round.tp_levels.append(TPLevel(price=price, status=TPStatus.PENDING))
+            
+            # 检查是否需要分层
+            if signal.get('layers', {}).get('enabled', False):
+                logging.info(
+                    f"开始创建分层订单:\n"
+                    f"Symbol: {signal['symbol']}\n"
+                    f"Direction: {signal['action']}\n"
+                    f"Entry Range: {signal['entry_range']}\n"
+                    f"Layers Config: {signal['layers']}"
+                )
+                
+                # 计算智能分层
+                layers = await self.trade_manager.calculate_smart_layers(
+                    symbol=signal['symbol'],
+                    direction=signal['action'],
+                    entry_range=(signal['entry_range']['min'], signal['entry_range']['max']),
+                    target_prices=signal['take_profits'],
+                    stop_loss=signal['stop_loss'],
+                    options=signal['layers']  # 传入完整的layers配置
+                )
+                
+                if not layers:
+                    logging.error(f"Failed to calculate layers for round {round_id}")
+                    return None
+                    
+                logging.info(
+                    f"分层计算完成:\n"
+                    f"Number of Layers: {layers['layers']}\n"
+                    f"Entry Prices: {layers['entry_prices']}\n"
+                    f"Layer Volumes: {layers['volumes']}"
+                )
+                
+                # 执行每个层级的订单
+                for i, (entry_price, volume) in enumerate(zip(layers['entry_prices'], layers['volumes'])):
+                    logging.info(
+                        f"Placing order for layer {i+1}/{len(layers['entry_prices'])}:\n"
+                        f"Entry Price: {entry_price}\n"
+                        f"Volume: {volume}"
+                    )
+                    
+                    result = await self.trade_manager.place_order(
+                        symbol=signal['symbol'],
+                        direction=signal['action'],
+                        volume=volume,
+                        entry_type='limit',
+                        entry_price=entry_price,
+                        stop_loss=signal['stop_loss'],
+                        take_profits=signal['take_profits'],
+                        round_id=round_id
+                    )
+                    
+                    if result:
+                        position = Position(
+                            id=result['orderId'],
+                            symbol=signal['symbol'],
+                            direction=signal['action'],
+                            volume=volume,
+                            entry_price=entry_price,
+                            stop_loss=signal['stop_loss'],
+                            take_profit=signal['take_profits'][0] if signal['take_profits'] else None,
+                            status=PositionStatus.PENDING,
+                            metadata={'layer': i}
+                        )
+                        round.positions[result['orderId']] = position
+                        logging.info(f"Layer {i+1} order placed successfully: {result['orderId']}")
+                    else:
+                        logging.error(f"Failed to place order for layer {i+1}")
+                
+            else:
+                # 单层订单处理...
+                pass
+            
+        except Exception as e:
+            logging.error(f"Error handling entry signal: {e}")

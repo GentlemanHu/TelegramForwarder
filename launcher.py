@@ -194,8 +194,25 @@ async def main():
 
     try:
         if args.mode == 'telegram':
+                # 设置日志
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.StreamHandler(),
+                    logging.FileHandler('bot.log')
+                ]
+            )
             await launcher.run_telegram_mode()
         else:
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.StreamHandler(),
+                    logging.FileHandler('web_ui.log')
+                ]
+            )
             await launcher.run_ui_mode()
     except Exception as e:
         logging.error(f"Fatal error: {e}")
@@ -204,12 +221,4 @@ async def main():
         await launcher.stop()
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler('web_ui.log')
-        ]
-    )
     asyncio.run(main())

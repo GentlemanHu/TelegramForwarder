@@ -30,25 +30,38 @@ class AIAnalyzer:
             'distribution': None
         })
 
-        if layers_config.get('enabled', False):
-            if not layers_config.get('count'):
-                layers_config['count'] = 3  # 默认3层
-                
-            # 确保distribution是有效的枚举值
-            valid_distributions = ['EQUAL', 'FIBONACCI', 'MOMENTUM', 'VOLUME']
-            current_dist = layers_config.get('distribution', 'EQUAL').upper()
-            layers_config['distribution'] = (
-                current_dist if current_dist in valid_distributions else 'EQUAL'
-            )
+        # 如果有价格区间，自动计算合适的分层数
+        if signal.get('entry_range'):
+            price_range = abs(signal['entry_range']['max'] - signal['entry_range']['min'])
+            # 使用价格区间的0.5%作为每层的参考距离
+            reference_distance = price_range * 0.005  
+            suggested_layers = max(2, min(5, int(price_range / reference_distance)))
             
-            # 添加高级分层配置
-            if not layers_config.get('advanced'):
-                layers_config['advanced'] = {
-                    'min_distance': 0.001,  # 最小层间距
-                    'max_distance': 0.005,  # 最大层间距
-                    'volume_scale': 1.0,    # 量的缩放因子
-                    'use_market_profile': False  # 是否使用市场轮廓
-                }
+            layers_config.update({
+                'enabled': True,
+                'count': suggested_layers,
+                'distribution': 'equal'
+            })
+        else:
+            if layers_config.get('enabled', False):
+                if not layers_config.get('count'):
+                    layers_config['count'] = 3  # 默认3层
+                    
+                # 确保distribution是有效的枚举值
+                valid_distributions = ['EQUAL', 'FIBONACCI', 'MOMENTUM', 'VOLUME']
+                current_dist = layers_config.get('distribution', 'EQUAL').upper()
+                layers_config['distribution'] = (
+                    current_dist if current_dist in valid_distributions else 'EQUAL'
+                )
+                
+                # 添加高级分层配置
+                if not layers_config.get('advanced'):
+                    layers_config['advanced'] = {
+                        'min_distance': 0.001,  # 最小层间距
+                        'max_distance': 0.005,  # 最大层间距
+                        'volume_scale': 1.0,    # 量的缩放因子
+                        'use_market_profile': False  # 是否使用市场轮廓
+                    }
 
         signal['layers'] = layers_config
 

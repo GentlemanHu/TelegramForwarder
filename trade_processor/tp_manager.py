@@ -1,4 +1,3 @@
-
 # tp_manager.py
 
 from dataclasses import dataclass
@@ -34,41 +33,46 @@ class DynamicTPManager:
         try:
             actions = []
             tp_levels = self.tp_cache.get(round_id, [])
-            
+            if not tp_levels:
+                return actions
+
             # 找到触发的止盈级别
             hit_level = None
             for tp in tp_levels:
-                if tp.status == TPStatus.PENDING and self._is_tp_hit(
-                    hit_price, tp.price, current_positions[0]['type']
-                ):
+                if tp.status != TPStatus.TRIGGERED and self._is_tp_hit(hit_price, tp.price, current_positions[0]['type']):
                     hit_level = tp
                     break
-                    
+
             if not hit_level:
                 return actions
 
             # 更新止盈状态
             hit_level.status = TPStatus.TRIGGERED
-            hit_level.hit_count += 1
             hit_level.hit_time = datetime.now()
+            hit_level.hit_count += 1
 
-            # 处理剩余仓位
-            remaining_positions = []
+            # 确定要关闭的仓位数量
+            total_positions = len(current_positions)
             positions_to_close = []
             
-            # 按照风险收益比排序仓位
-            sorted_positions = sorted(
-                current_positions,
-                key=lambda p: self._calculate_risk_reward(p),
-                reverse=True
-            )
+            # 如果是第一个TP
+            if hit_level == tp_levels[0]:
+                # 关闭30%的仓位
+                positions_to_close = current_positions[:max(1, int(total_positions * 0.3))]
+                # 取消所有limit订单
+                actions.append({
+                    'action': 'cancel_pending_orders',
+                    'round_id': round_id,
+                    'reason': 'tp1_hit'
+                })
+            elif hit_level == tp_levels[-1]:
+                # 最后的TP，关闭所有仓位
+                positions_to_close = current_positions
+            else:
+                # 中间的TP，关闭50%的剩余仓位
+                positions_to_close = current_positions[:max(1, int(total_positions * 0.5))]
 
-            # 确定要平仓的仓位数量
-            positions_per_tp = max(1, len(sorted_positions) // len(tp_levels))
-            positions_to_close = sorted_positions[:positions_per_tp]
-            remaining_positions = sorted_positions[positions_per_tp:]
-
-            # 生成平仓动作
+            # 添加关闭仓位的动作
             for position in positions_to_close:
                 actions.append({
                     'action': 'close_position',
@@ -78,8 +82,60 @@ class DynamicTPManager:
                 })
 
             # 处理剩余仓位
+            remaining_positions = [p for p in current_positions if p not in positions_to_close]
             if remaining_positions:
                 # 移动止损到保本点
+                breakeven_actions = await self._handle_breakeven(round_id, remaining_positions, hit_level)
+                actions.extend(breakeven_actions)
+
+                # 更新剩余仓位的止盈
+                tp_update_actions = await self._update_remaining_tps(round_id, remaining_positions, hit_level)
+                actions.extend(tp_update_actions)
+
+                # 为剩余仓位启用追踪止损
+                for position in remaining_positions:
+                    entry_price = float(position['openPrice'])
+                    price_range = abs(hit_level.price - entry_price)
+                    trailing_distance = price_range * 0.1
+                    actions.append({
+                        'action': 'modify_position',
+                        'position_id': position['id'],
+                        'trailing_stop': {
+                            'distance': trailing_distance,
+                            'threshold': hit_price
+                        }
+                    })
+
+            return actions
+
+        except Exception as e:
+            logging.error(f"Error handling TP hit: {e}")
+            return []
+
+    async def handle_position_closure(
+        self,
+        round_id: str,
+        current_price: float,
+        remaining_positions: List[Dict]
+    ) -> List[Dict]:
+        """处理仓位关闭后的其他仓位设置"""
+        try:
+            actions = []
+            tp_levels = self.tp_cache.get(round_id, [])
+            
+            # 找到最近触发的止盈级别
+            hit_level = None
+            for tp in reversed(tp_levels):
+                if tp.status == TPStatus.TRIGGERED:
+                    hit_level = tp
+                    break
+                    
+            if not hit_level:
+                return actions
+
+            # 处理剩余仓位
+            if remaining_positions:
+                # 设置保本点
                 breakeven_actions = await self._handle_breakeven(
                     round_id,
                     remaining_positions,
@@ -87,7 +143,7 @@ class DynamicTPManager:
                 )
                 actions.extend(breakeven_actions)
 
-                # 更新剩余仓位的止盈
+                # 更新剩余仓位的止盈和启用追踪止损
                 tp_update_actions = await self._update_remaining_tps(
                     round_id,
                     remaining_positions,
@@ -95,10 +151,26 @@ class DynamicTPManager:
                 )
                 actions.extend(tp_update_actions)
 
-            return actions
+                # 为剩余仓位启用追踪止损
+                for position in remaining_positions:
+                    # 计算追踪止损的激活价格和距离
+                    entry_price = float(position['openPrice'])
+                    price_range = abs(hit_level.price - entry_price)
+                    
+                    # 追踪止损距离设为价格范围的10%
+                    trailing_distance = price_range * 0.1
+                    
+                    # 激活价格设为当前价格
+                    self.enable_trailing_stop(
+                        position['id'],
+                        current_price,
+                        trailing_distance
+                    )
 
+            return actions
+            
         except Exception as e:
-            logging.error(f"Error handling TP hit: {e}")
+            logging.error(f"Error handling position closure: {e}")
             return []
 
     async def _handle_breakeven(
@@ -113,8 +185,16 @@ class DynamicTPManager:
             for position in positions:
                 entry_price = float(position['openPrice'])
                 
-                # 添加一些缓冲区
-                buffer = abs(entry_price - hit_tp.price) * 0.1
+                # 计算保本点
+                price_range = abs(hit_tp.price - entry_price)
+                buffer_ratio = 0.1  # 10%的缓冲区
+                
+                # 根据盈利情况调整缓冲区
+                if price_range > 0:
+                    # 盈利越大，缓冲区越大
+                    buffer_ratio = min(0.2, buffer_ratio * (1 + price_range / entry_price))
+                
+                buffer = price_range * buffer_ratio
                 breakeven_price = entry_price + (buffer if position['type'] == 'buy' else -buffer)
                 
                 actions.append({
@@ -145,15 +225,29 @@ class DynamicTPManager:
             if not remaining_tps:
                 return actions
 
-            # 为每个仓位设置下一个止盈
+            # 智能分配剩余止盈
             for position in positions:
-                next_tp = remaining_tps[0].price
-                actions.append({
-                    'action': 'modify_position',
-                    'position_id': position['id'],
-                    'take_profit': next_tp,
-                    'reason': 'tp_update_after_hit'
-                })
+                entry_price = float(position['openPrice'])
+                current_profit = abs(hit_tp.price - entry_price)
+                
+                # 根据当前盈利调整剩余止盈
+                adjusted_tps = []
+                for tp in remaining_tps:
+                    # 如果盈利显著，适当提高止盈目标
+                    if current_profit > 0:
+                        profit_factor = current_profit / entry_price
+                        adjusted_price = tp.price * (1 + profit_factor * 0.1)
+                        adjusted_tps.append(adjusted_price)
+                    else:
+                        adjusted_tps.append(tp.price)
+
+                if adjusted_tps:
+                    actions.append({
+                        'action': 'modify_position',
+                        'position_id': position['id'],
+                        'take_profit': adjusted_tps[0],
+                        'reason': 'tp_update_after_hit'
+                    })
 
             return actions
 
@@ -178,8 +272,19 @@ class DynamicTPManager:
                 return 0
                 
             risk = abs(entry_price - stop_loss)
+            if risk == 0:
+                return 0
+                
             reward = abs(take_profit - entry_price)
-            return reward / risk
+            
+            # 考虑当前价格对风险收益比的影响
+            current_price = float(position.get('currentPrice', entry_price))
+            unrealized_profit = abs(current_price - entry_price)
+            
+            # 将未实现利润纳入考虑
+            adjusted_reward = reward + unrealized_profit
+            
+            return adjusted_reward / risk
             
         except Exception as e:
             logging.error(f"Error calculating risk reward: {e}")
