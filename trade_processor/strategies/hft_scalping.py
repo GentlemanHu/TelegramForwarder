@@ -23,7 +23,7 @@ class HFTScalpingStrategy(BaseStrategy):
         }
 
 
-
+;
     async def calculate_vwap(self, symbol: str, candles: List[Dict]):
         """计算VWAP"""
         try:
