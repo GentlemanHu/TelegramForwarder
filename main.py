@@ -58,12 +58,6 @@ class ForwardBot:
             ai_analyzer=self.ai_analyzer
         )
         
-        # Set message handler back to trade manager and position manager
-        if self.trade_manager:
-            self.trade_manager.message_handler = self.message_handler
-        if self.position_manager:
-            self.position_manager.message_handler = self.message_handler
-        
         # Initialize channel manager
         self.channel_manager = ChannelManager(self.db, config, self.client)
         

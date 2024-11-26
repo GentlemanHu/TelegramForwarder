@@ -129,29 +129,21 @@ class AsyncBotLauncher:
 
     async def run_telegram_mode(self):
         """Run in Telegram mode"""
+        if not await self.initialize_components():
+            logging.error("Failed to initialize components for Telegram mode")
+            return
+
         try:
-            # 先创建bot实例，因为它包含message_handler
             if not self._bot:
+                # 创建 bot 实例时传入已初始化的组件
                 self._bot = ForwardBot(
-                    config=self.config
+                    config=self.config,
+                    trade_manager=self.trade_manager,
+                    position_manager=self.position_manager,
+                    signal_processor=self.signal_processor,
+                    ai_analyzer=self.ai_analyzer
                 )
-                
-            # 初始化交易组件，并传入message_handler
-            if not await self.initialize_components():
-                logging.error("Failed to initialize components for Telegram mode")
-                return
-                
-            # 更新bot的组件引用
-            self._bot.trade_manager = self.trade_manager
-            self._bot.position_manager = self.position_manager
-            self._bot.signal_processor = self.signal_processor
-            self._bot.ai_analyzer = self.ai_analyzer
             
-            # 确保message_handler被正确设置
-            self.trade_manager.message_handler = self._bot.message_handler
-            self.position_manager.message_handler = self._bot.message_handler
-            
-            # 启动bot
             await self._bot.start()
             
         except Exception as e:
