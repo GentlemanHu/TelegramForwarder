@@ -14,6 +14,7 @@ class PositionManager:
         self.layer_manager = SmartLayerManager(trade_manager)
         self.round_manager = RoundManager(trade_manager.connection, trade_manager)
         self._initialized = False
+        self.message_handler = trade_manager.message_handler  # Add message handler reference
 
     async def initialize(self):
         """Initialize position manager and all sub-components"""
@@ -269,18 +270,15 @@ class PositionManager:
             # 获取当前价格
             entry_price = signal.get('entry_price')
             if not entry_price and signal['entry_type'] == 'market':
-                # 直接从 terminal_state 获取价格
                 price_info = terminal_state.price(signal['symbol'])
                 if price_info:
                     entry_price = price_info['ask'] if signal['action'] == 'buy' else price_info['bid']
                 else:
-                    # 使用正确的订阅格式
                     await self.trade_manager.connection.subscribe_to_market_data(
                         signal['symbol'],
                         [{'type': 'quotes'}]
                     )
-                    # 等待价格数据
-                    for _ in range(10):  # 最多等待10次
+                    for _ in range(10):  # Wait up to 10 times
                         await asyncio.sleep(0.1)
                         price_info = terminal_state.price(signal['symbol'])
                         if price_info:
@@ -293,7 +291,7 @@ class PositionManager:
 
             # 设置默认止损
             if not signal.get('stop_loss'):
-                stop_distance = entry_price * 0.01  # 1%的止损距离
+                stop_distance = entry_price * 0.01  # 1% stop loss distance
                 signal['stop_loss'] = entry_price - stop_distance if signal['action'] == 'buy' else entry_price + stop_distance
 
             # 计算交易量
@@ -311,14 +309,36 @@ class PositionManager:
                 entry_price=signal.get('entry_price'),
                 stop_loss=signal.get('stop_loss'),
                 take_profits=signal.get('take_profits', []),
-                round_id=round_id  # 传入round_id
+                round_id=round_id
             )
 
             if not order_result:
                 logging.error("Failed to place order")
+                if self.message_handler:
+                    error_data = {
+                        'error_type': 'Order Placement Error',
+                        'error_message': 'Failed to place order',
+                        'symbol': signal['symbol'],
+                        'details': f"Entry: {entry_price}, Volume: {volume}, Type: {signal['entry_type']}"
+                    }
+                    error_msg = self.message_handler.format_trade_notification('error', error_data)
+                    await self.message_handler.send_trade_notification(error_msg)
                 return None
 
-            # 创建Position对象
+            # Send order opened notification
+            if self.message_handler:
+                order_data = {
+                    'symbol': signal['symbol'],
+                    'type': signal['action'],
+                    'volume': volume,
+                    'entry_price': entry_price,
+                    'stop_loss': signal['stop_loss'],
+                    'take_profit': signal['take_profits'][0] if signal['take_profits'] else None
+                }
+                order_msg = self.message_handler.format_trade_notification('order_opened', order_data)
+                await self.message_handler.send_trade_notification(order_msg)
+
+            # Create Position object
             position = Position(
                 id=order_result['orderId'],
                 symbol=signal['symbol'],
@@ -329,24 +349,20 @@ class PositionManager:
                 stop_loss=signal.get('stop_loss'),
                 take_profits=signal.get('take_profits', []),
                 layer_index=0,
-                round_id=round_id,  # 设置round_id
+                round_id=round_id,
                 metadata={
                     'creation_time': datetime.now().isoformat(),
                     'single_position': True
                 }
             )
 
-            # 确保round_manager已初始化
-            if not hasattr(self.round_manager, '_price_listeners'):
-                await self.round_manager.initialize()
-
-            # 创建交易round
+            # Create trade round
             round_id = await self.round_manager.create_round(signal, [position])
             if not round_id:
                 logging.error("Failed to create trade round")
                 return None
 
-            # 设置价格监控
+            # Setup price monitoring
             await self.round_manager._setup_price_monitoring(signal['symbol'])
 
             logging.info(f"Created single position with round_id: {round_id}")
@@ -354,6 +370,15 @@ class PositionManager:
 
         except Exception as e:
             logging.error(f"Error creating single position: {e}")
+            if self.message_handler:
+                error_data = {
+                    'error_type': 'Position Creation Error',
+                    'error_message': str(e),
+                    'symbol': signal.get('symbol', 'Unknown'),
+                    'details': 'Failed to create position'
+                }
+                error_msg = self.message_handler.format_trade_notification('error', error_data)
+                await self.message_handler.send_trade_notification(error_msg)
             return None
 
 

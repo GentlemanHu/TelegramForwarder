@@ -1,10 +1,9 @@
-
 # layer_manager.py
 
 from enum import Enum
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import logging
 from datetime import datetime, timedelta
 
@@ -43,6 +42,7 @@ class SmartLayerManager:
     def __init__(self, trade_manager: 'TradeManager'):
         self.trade_manager = trade_manager
         self._layer_cache = {}  # 缓存已计算的分层
+        self.message_handler = trade_manager.message_handler  # Add message handler reference
 
     async def calculate_smart_layers(
         self,
@@ -393,3 +393,142 @@ class SmartLayerManager:
             logging.error(f"Error getting layer take profits: {e}")
             return [base_take_profits[0]] if base_take_profits else []
 
+    async def create_layer(self, round_id: str, layer_config: Dict[str, Any]) -> Optional[str]:
+        """Create a new layer for an existing position"""
+        try:
+            terminal_state = self.trade_manager.connection.terminal_state
+            if not terminal_state:
+                logging.error("Terminal state not available")
+                return None
+
+            # Get layer parameters
+            symbol = layer_config.get('symbol')
+            entry_price = layer_config.get('entry_price')
+            volume = layer_config.get('volume')
+            stop_loss = layer_config.get('stop_loss')
+            take_profits = layer_config.get('take_profits', [])
+            layer_index = layer_config.get('layer_index', 0)
+
+            if not all([symbol, entry_price, volume, stop_loss]):
+                logging.error("Missing required layer parameters")
+                return None
+
+            # Place layer order
+            order_result = await self.trade_manager.place_order(
+                symbol=symbol,
+                direction=layer_config.get('direction', 'buy'),
+                volume=volume,
+                entry_type='limit',
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profits=take_profits,
+                round_id=round_id
+            )
+
+            if not order_result:
+                logging.error("Failed to place layer order")
+                if self.message_handler:
+                    error_data = {
+                        'error_type': 'Layer Creation Error',
+                        'error_message': 'Failed to place layer order',
+                        'symbol': symbol,
+                        'details': f"Price: {entry_price}, Volume: {volume}"
+                    }
+                    error_msg = self.message_handler.format_trade_notification('error', error_data)
+                    await self.message_handler.send_trade_notification(error_msg)
+                return None
+
+            # Send layer added notification
+            if self.message_handler:
+                # Get total position volume
+                total_volume = sum(
+                    float(pos.get('volume', 0))
+                    for pos in terminal_state.positions
+                    if pos.get('symbol') == symbol and pos.get('type') == layer_config.get('direction')
+                )
+
+                layer_data = {
+                    'symbol': symbol,
+                    'price': entry_price,
+                    'volume': volume,
+                    'total_volume': total_volume + volume,
+                    'avg_entry': sum(
+                        float(pos.get('openPrice', 0)) * float(pos.get('volume', 0))
+                        for pos in terminal_state.positions
+                        if pos.get('symbol') == symbol and pos.get('type') == layer_config.get('direction')
+                    ) / total_volume if total_volume > 0 else entry_price
+                }
+                layer_msg = self.message_handler.format_trade_notification('layer_added', layer_data)
+                await self.message_handler.send_trade_notification(layer_msg)
+
+            return order_result.get('orderId')
+
+        except Exception as e:
+            logging.error(f"Error creating layer: {e}")
+            if self.message_handler:
+                error_data = {
+                    'error_type': 'Layer Creation Error',
+                    'error_message': str(e),
+                    'symbol': layer_config.get('symbol', 'Unknown'),
+                    'details': 'Failed to create layer'
+                }
+                error_msg = self.message_handler.format_trade_notification('error', error_data)
+                await self.message_handler.send_trade_notification(error_msg)
+            return None
+
+    async def close_layer(self, position_id: str, volume: Optional[float] = None) -> bool:
+        """Close a specific layer"""
+        try:
+            # Get position details
+            position = await self.trade_manager.get_position(position_id)
+            if not position:
+                logging.error(f"Position {position_id} not found")
+                return False
+
+            # Close position
+            if volume and volume < float(position.get('volume', 0)):
+                result = await self.trade_manager.modify_position_partial(
+                    position_id=position_id,
+                    volume=volume
+                )
+            else:
+                result = await self.trade_manager.close_position(position_id)
+
+            if result:
+                # Send layer closed notification
+                if self.message_handler:
+                    # Calculate remaining position volume
+                    terminal_state = self.trade_manager.connection.terminal_state
+                    remaining_volume = sum(
+                        float(pos.get('volume', 0))
+                        for pos in terminal_state.positions
+                        if pos.get('symbol') == position.get('symbol') and 
+                           pos.get('type') == position.get('type') and
+                           pos.get('id') != position_id
+                    )
+
+                    layer_data = {
+                        'symbol': position.get('symbol'),
+                        'price': position.get('closePrice'),
+                        'volume': volume or position.get('volume'),
+                        'remaining_volume': remaining_volume,
+                        'layer_pl': position.get('profit', 0)
+                    }
+                    layer_msg = self.message_handler.format_trade_notification('layer_closed', layer_data)
+                    await self.message_handler.send_trade_notification(layer_msg)
+
+                return True
+            return False
+
+        except Exception as e:
+            logging.error(f"Error closing layer: {e}")
+            if self.message_handler:
+                error_data = {
+                    'error_type': 'Layer Closure Error',
+                    'error_message': str(e),
+                    'symbol': position.get('symbol', 'Unknown') if position else 'Unknown',
+                    'details': f"Failed to close layer for position {position_id}"
+                }
+                error_msg = self.message_handler.format_trade_notification('error', error_data)
+                await self.message_handler.send_trade_notification(error_msg)
+            return False

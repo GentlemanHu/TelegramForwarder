@@ -169,7 +169,7 @@ class TradeSynchronizationListener(SynchronizationListener):
         pass
 
 class TradeManager:
-    def __init__(self, config: 'TradeConfig'):
+    def __init__(self, config: 'TradeConfig', message_handler=None):
         self.config = config
         self.api = MetaApi(config.meta_api_token)
         self.account = None
@@ -184,6 +184,7 @@ class TradeManager:
         self.active_streams = {}  # 新增：跟踪活跃的流订阅
         self._candle_data = {}  # 存储每个symbol的最新K线数据
         self._candle_listeners: Dict[str, List] = {}  # K线数据监听器
+        self.message_handler = message_handler  # Add message handler for notifications
 
     async def _handle_position_update(self, position: Dict):
         """Handle position updates with profit validation"""
@@ -199,6 +200,25 @@ class TradeManager:
                         f"Type: {position.get('type')}, "
                         f"Volume: {position.get('volume')}, "
                         f"Profit: {position.get('profit'):.2f}")
+                        
+            # Send notification if position is closed
+            if position.get('state') == 'CLOSED' and self.message_handler:
+                notification_data = {
+                    'symbol': position.get('symbol'),
+                    'type': position.get('type'),
+                    'volume': position.get('volume'),
+                    'entry_price': position.get('openPrice'),
+                    'close_price': position.get('closePrice'),
+                    'profit': position.get('profit'),
+                    'profit_pct': (position.get('profit', 0) / (float(position.get('openPrice', 1)) * float(position.get('volume', 1)))) * 100,
+                    'duration': str(datetime.fromisoformat(position.get('closeTime')) - datetime.fromisoformat(position.get('openTime'))) if position.get('closeTime') and position.get('openTime') else 'N/A'
+                }
+                
+                notification_msg = self.message_handler.format_trade_notification(
+                    'order_closed', 
+                    notification_data
+                )
+                await self.message_handler.send_trade_notification(notification_msg)
                         
             for listener in self._position_listeners:
                 try:
@@ -217,6 +237,30 @@ class TradeManager:
                 logging.info(f"Position {position_id} removed")
         except Exception as e:
             logging.error(f"Error handling position removal: {e}")
+
+    async def _handle_order_update(self, order: Dict):
+        """处理订单更新事件"""
+        try:
+            order_id = order.get('id')
+            if not order_id:
+                return
+                
+            logging.info(
+                f"Order update - ID: {order_id}, "
+                f"Symbol: {order.get('symbol')}, "
+                f"Type: {order.get('type')}, "
+                f"State: {order.get('state')}"
+            )
+            
+            # 通知订单监听器
+            for listener in self._order_listeners:
+                try:
+                    await listener(order)
+                except Exception as e:
+                    logging.error(f"Error in order listener: {e}")
+                    
+        except Exception as e:
+            logging.error(f"Error handling order update: {e}")
 
     def add_price_listener(self, symbol: str, callback):
         """Add price listener for specific symbol"""
@@ -299,6 +343,9 @@ class TradeManager:
             await self.initialize()
             
         try:
+            # Get original position data for notification
+            original_position = await self.get_position(position_id)
+            
             options = {}
             if trailing_stop:
                 options['trailingStopLoss'] = trailing_stop
@@ -309,66 +356,46 @@ class TradeManager:
                 take_profit=take_profit,
                 options=options
             )
+
+            # Send notifications for SL/TP updates if message handler exists
+            if self.message_handler and result:
+                current_price = self.connection.terminal_state.price(result.get('symbol'))
+                current_price = current_price.get('ask' if result.get('type') == 'buy' else 'bid', 0) if current_price else 0
+                
+                if stop_loss and original_position:
+                    sl_data = {
+                        'symbol': result.get('symbol'),
+                        'new_sl': stop_loss,
+                        'old_sl': original_position.get('stopLoss'),
+                        'current_price': current_price,
+                        'floating_pl': result.get('profit', 0)
+                    }
+                    sl_msg = self.message_handler.format_trade_notification('sl_updated', sl_data)
+                    await self.message_handler.send_trade_notification(sl_msg)
+                    
+                if take_profit and original_position:
+                    tp_data = {
+                        'symbol': result.get('symbol'),
+                        'new_tp': take_profit,
+                        'old_tp': original_position.get('takeProfit'),
+                        'current_price': current_price,
+                        'floating_pl': result.get('profit', 0)
+                    }
+                    tp_msg = self.message_handler.format_trade_notification('tp_updated', tp_data)
+                    await self.message_handler.send_trade_notification(tp_msg)
+                    
             return result
         except Exception as e:
             logging.error(f"Error modifying position: {e}")
-            return None
-
-    async def close_position(
-        self,
-        position_id: str,
-        volume: Optional[float] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Close position fully or partially"""
-        if not self._initialized:
-            await self.initialize()
-            
-        try:
-            if volume:
-                result = await self.connection.close_position_partially(
-                    position_id=position_id,
-                    volume=volume
-                )
-            else:
-                result = await self.connection.close_position(
-                    position_id=position_id
-                )
-            return result
-        except Exception as e:
-            logging.error(f"Error closing position: {e}")
-            return None
-
-    async def modify_position(
-        self,
-        position_id: str,
-        stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None,
-        trailing_stop: Optional[Dict] = None
-    ) -> Optional[Dict[str, Any]]:
-        """修改持仓"""
-        if not self._initialized:
-            await self.initialize()
-            
-        try:
-            result = await self.connection.modify_position(
-                position_id=position_id,
-                stop_loss=stop_loss,
-                take_profit=take_profit
-            )
-            
-            if trailing_stop:
-                try:
-                    await self.connection.modify_position(
-                        position_id=position_id,
-                        trailing_stop_loss=trailing_stop['distance']
-                    )
-                except Exception as e:
-                    logging.error(f"Error setting trailing stop: {e}")
-            
-            return result
-
-        except Exception as e:
-            logging.error(f"Error modifying position: {e}")
+            if self.message_handler:
+                error_data = {
+                    'error_type': 'Position Modification Error',
+                    'error_message': str(e),
+                    'symbol': original_position.get('symbol') if original_position else 'Unknown',
+                    'details': f"Failed to modify position {position_id}"
+                }
+                error_msg = self.message_handler.format_trade_notification('error', error_data)
+                await self.message_handler.send_trade_notification(error_msg)
             return None
 
     async def subscribe_to_market_data(self, symbol: str) -> bool:

@@ -93,7 +93,7 @@ class MyMessageHandler:
                 
                 # 创建新的信号处理任务
                 task = asyncio.create_task(
-                    self.signal_processor.handle_channel_message(std_event)
+                    self.process_signal_task(std_event)
                 )
                 self.signal_tasks.add(task)
                 task.add_done_callback(lambda t: self.signal_tasks.discard(t))
@@ -238,54 +238,58 @@ class MyMessageHandler:
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
 
+    async def _send_message(self, chat_id: int, text: str, parse_mode: str = None):
+        """统一的消息发送方法，支持UI模式
+        
+        Args:
+            chat_id: 目标聊天ID
+            text: 消息文本
+            parse_mode: 消息解析模式（可选）
+        """
+        # 在UI模式下，只记录日志
+        if not self.bot:
+            logging.info(f"[UI Mode] Message to {chat_id}: {text}")
+            return
 
-    async def initialize(self) -> bool:
-        """初始化所有组件"""
-        if self._initialized:
-            return True
-            
+        # 正常模式下发送消息
         try:
-            # 启动清理任务
-            await self.start_cleanup_task()
-            
-            self._initialized = True
-            self.sync_complete.set()
-            self.initialized_event.set()
-            
-            logging.info("Message handler initialized successfully")
-            return True
-            
-        except Exception as e:
-            logging.error(f"Error during initialization: {e}")
-            return False
-
-
-    async def wait_initialized(self, timeout: float = 300) -> bool:
-        """等待初始化完成"""
-        try:
-            await asyncio.wait_for(
-                self.initialized_event.wait(),
-                timeout=timeout
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=parse_mode
             )
-            return True
-        except asyncio.TimeoutError:
-            logging.error("Initialization timeout")
-            return False
-
-
-    async def process_signal_task(self, event):
-        """单独的信号处理任务"""
-        try:
-            await self.signal_processor.handle_channel_message(event)
         except Exception as e:
-            logging.error(f"Error in signal processing task: {e}")
-            logging.error(traceback.format_exc())
-        finally:
-            # 任务完成后从集合中移除
-            for task in self.signal_tasks:
-                if task.done():
-                    self.signal_tasks.remove(task)
+            logging.error(f"Error sending message: {e}")
 
+    async def send_trade_notification(self, message: str, parse_mode: str = 'HTML'):
+        """Send trade notification to the bot owner
+        
+        Args:
+            message: The notification message
+            parse_mode: Message parse mode (HTML/Markdown)
+        """
+        await self._send_message(
+            chat_id=self.config.OWNER_ID,
+            text=message,
+            parse_mode=parse_mode
+        )
+
+    async def handle_text_forward(self, message, from_chat, channel_id):
+        """处理文本消息转发"""
+        try:
+            # 构建转发消息标题
+            forward_title = await self._build_forward_title(from_chat, message)
+            
+            # 发送文本消息
+            await self._send_message(
+                chat_id=channel_id,
+                text=forward_title
+            )
+            logging.info(f"Successfully forwarded text message to channel {channel_id}")
+            
+        except Exception as e:
+            logging.error(f"Error in handle_text_forward: {e}")
+            raise
 
     async def handle_media_send(self, message, channel_id, from_chat, media_type: str):
         """处理媒体发送"""
@@ -408,3 +412,49 @@ class MyMessageHandler:
             percentage = current * 100 / total
             if percentage % 20 == 0:  # 每20%记录一次
                 logging.info(get_text('en', 'download_progress', percentage=percentage))
+
+    async def initialize(self) -> bool:
+        """初始化所有组件"""
+        if self._initialized:
+            return True
+            
+        try:
+            # 启动清理任务
+            await self.start_cleanup_task()
+            
+            self._initialized = True
+            self.sync_complete.set()
+            self.initialized_event.set()
+            
+            logging.info("Message handler initialized successfully")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error during initialization: {e}")
+            return False
+
+
+    async def wait_initialized(self, timeout: float = 300) -> bool:
+        """等待初始化完成"""
+        try:
+            await asyncio.wait_for(
+                self.initialized_event.wait(),
+                timeout=timeout
+            )
+            return True
+        except asyncio.TimeoutError:
+            logging.error("Initialization timeout")
+            return False;
+
+    async def process_signal_task(self, event):
+        """单独的信号处理任务"""
+        try:
+            await self.signal_processor.handle_channel_message(event)
+        except Exception as e:
+            logging.error(f"Error in signal processing task: {e}")
+            logging.error(traceback.format_exc())
+        finally:
+            # 任务完成后从集合中移除
+            for task in self.signal_tasks:
+                if task.done():
+                    self.signal_tasks.remove(task)
