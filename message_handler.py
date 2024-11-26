@@ -246,9 +246,10 @@ class MyMessageHandler:
             text: 消息文本
             parse_mode: 消息解析模式（可选）
         """
-        # 在UI模式下，只记录日志
+        # 检查bot初始化状态
         if not self.bot:
-            logging.info(f"[UI Mode] Message to {chat_id}: {text}")
+            logging.error("Telegram bot not initialized properly. Message not sent.")
+            logging.info(f"[Unsent Message] To {chat_id}: {text}")
             return
 
         # 正常模式下发送消息
@@ -258,8 +259,13 @@ class MyMessageHandler:
                 text=text,
                 parse_mode=parse_mode
             )
+            logging.info(f"Successfully sent notification to {chat_id}")
         except Exception as e:
-            logging.error(f"Error sending message: {e}")
+            logging.error(f"Error sending message to {chat_id}: {str(e)}")
+            logging.error(f"Message content: {text}")
+            logging.error(f"Parse mode: {parse_mode}")
+            # Log the full exception traceback for debugging
+            logging.error(traceback.format_exc())
 
     async def send_trade_notification(self, message: str, parse_mode: str = 'HTML'):
         """Send trade notification to the bot owner
@@ -268,11 +274,20 @@ class MyMessageHandler:
             message: The notification message
             parse_mode: Message parse mode (HTML/Markdown)
         """
-        await self._send_message(
-            chat_id=self.config.OWNER_ID,
-            text=message,
-            parse_mode=parse_mode
-        )
+        if not hasattr(self.config, 'OWNER_ID'):
+            logging.error("OWNER_ID not configured in config")
+            return
+            
+        try:
+            await self._send_message(
+                chat_id=self.config.OWNER_ID,
+                text=message,
+                parse_mode=parse_mode
+            )
+        except Exception as e:
+            logging.error(f"Failed to send trade notification: {str(e)}")
+            logging.error(f"Notification content: {message}")
+            logging.error(traceback.format_exc())
 
     async def handle_text_forward(self, message, from_chat, channel_id):
         """处理文本消息转发"""

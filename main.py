@@ -46,17 +46,8 @@ class ForwardBot:
         self.signal_processor = signal_processor
         self.ai_analyzer = ai_analyzer
         
-        # Initialize message handler
-        self.message_handler = MyMessageHandler(
-            self.db, 
-            self.client,
-            self.application.bot,
-            self.config,
-            trade_manager=self.trade_manager,
-            position_manager=self.position_manager,
-            signal_processor=self.signal_processor,
-            ai_analyzer=self.ai_analyzer
-        )
+        # Initialize bot first, then message handler
+        self.message_handler = None  # Will be initialized after bot setup
         
         # Initialize channel manager
         self.channel_manager = ChannelManager(self.db, config, self.client)
@@ -67,6 +58,23 @@ class ForwardBot:
     async def initialize(self):
         """Initialize bot components"""
         try:
+            # Initialize application first
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling()
+            
+            # Now initialize message handler with the initialized bot
+            self.message_handler = MyMessageHandler(
+                self.db, 
+                self.client,
+                self.application.bot,
+                self.config,
+                trade_manager=self.trade_manager,
+                position_manager=self.position_manager,
+                signal_processor=self.signal_processor,
+                ai_analyzer=self.ai_analyzer
+            )
+            
             # Set up commands
             await BotCommands.setup_commands(self.application)
             logging.info("Bot commands initialized successfully")
@@ -80,7 +88,7 @@ class ForwardBot:
     async def start(self):
         """Start the bot"""
         try:
-            # Initialize bot
+            # Initialize bot and message handler
             await self.initialize()
             
             # Start Telethon client
@@ -89,12 +97,8 @@ class ForwardBot:
             # Register message handler
             @self.client.on(events.NewMessage)
             async def handle_new_message(event):
-                await self.message_handler.handle_channel_message(event)
-            
-            # Start bot
-            await self.application.initialize()
-            await self.application.start()
-            await self.application.updater.start_polling()
+                if self.message_handler:  # Check if handler is initialized
+                    await self.message_handler.handle_channel_message(event)
             
             print("Bot started successfully!")
             
@@ -239,9 +243,6 @@ async def main():
         
         # 创建并启动机器人
         bot = ForwardBot(config)
-        
-        # 初始化所有组件
-        await bot.message_handler.initialize()
         
         # 启动机器人
         await bot.start()
