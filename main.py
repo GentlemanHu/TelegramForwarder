@@ -61,6 +61,10 @@ class ForwardBot:
             ai_analyzer=self.ai_analyzer
         )
         
+        # Set message handler to components
+        if self.trade_manager:
+            self.trade_manager.message_handler = self.message_handler
+        
         # Initialize channel manager
         self.channel_manager = ChannelManager(self.db, config, self.client)
         
@@ -394,9 +398,6 @@ async def main():
             signal_processor=signal_processor,
             ai_analyzer=ai_analyzer
         )
-        
-        # 设置 TradeManager 的 message_handler
-        trade_manager.message_handler = bot.message_handler
         
         # 启动机器人
         await bot.start()

@@ -107,12 +107,6 @@ class AsyncBotLauncher:
                 # 启动bot
                 await self._bot.start()
                 
-                # 设置 message_handler
-                if self._bot.message_handler:
-                    logging.info("Setting message_handler to trade_manager and position_manager")
-                    self.trade_manager.message_handler = self._bot.message_handler
-                    self.position_manager.message_handler = self._bot.message_handler
-
             self.initialized = True
             logging.info("All components initialized successfully")
             return True
