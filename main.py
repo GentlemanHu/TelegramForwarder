@@ -158,9 +158,12 @@ class ForwardBot:
                 f"⏰ Start Time: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
             )
             
-            # 等待账户连接就绪
-            if self.trade_manager:
-                await self.trade_manager.wait_connected()
+            # 等待账户连接就绪并获取账户信息
+            if self.trade_manager and self.trade_manager.connection:
+                # 等待连接就绪
+                await self.trade_manager.connection.connect()
+                await self.trade_manager.connection.wait_synchronized()
+                
                 # 获取并发送账户信息
                 await self._send_account_status()
             
@@ -182,16 +185,17 @@ class ForwardBot:
                 return
                 
             # 获取账户信息
-            account = await self.trade_manager.connection.get_account_information()
-            positions = await self.trade_manager.connection.get_positions()
+            connection = self.trade_manager.connection
+            account = connection.account_information
+            positions = connection.positions
             
             # 格式化账户信息
             account_str = (
                 "💰 Account Information:\n"
                 f"Balance: <code>${account.get('balance', 0):.2f}</code>\n"
                 f"Equity: <code>${account.get('equity', 0):.2f}</code>\n"
-                f"Margin Level: <code>{account.get('marginLevel', 0):.2f}%</code>\n"
-                f"Free Margin: <code>${account.get('freeMargin', 0):.2f}</code>"
+                f"Margin Level: <code>{account.get('margin_level', 0):.2f}%</code>\n"
+                f"Free Margin: <code>${account.get('free_margin', 0):.2f}</code>"
             )
             
             # 格式化持仓信息
@@ -199,8 +203,8 @@ class ForwardBot:
             if positions:
                 positions_str = "📊 Current Positions:\n" + "\n".join([
                     f"• {p.get('symbol', 'Unknown')}: {p.get('type', 'Unknown')} "
-                    f"{p.get('volume', 0)} lots @ {p.get('openPrice', 0):.2f} "
-                    f"(P/L: ${p.get('unrealizedProfit', 0):.2f})"
+                    f"{p.get('volume', 0)} lots @ {p.get('open_price', 0):.2f} "
+                    f"(P/L: ${p.get('profit', 0):.2f})"
                     for p in positions
                 ])
             
