@@ -132,44 +132,19 @@ class ForwardBot:
             await self.client.start(phone=self.config.PHONE_NUMBER)
             
             # Register message handler
-            self.client.add_event_handler(
-                self.message_handler.handle_channel_message,
-                events.NewMessage(chats=self.config.CHANNEL_IDS)
-            )
+            @self.client.on(events.NewMessage)
+            async def handle_new_message(event):
+                await self.message_handler.handle_channel_message(event)
             
             # Start bot
             await self.application.initialize()
             await self.application.start()
             await self.application.updater.start_polling()
             
-            # 获取系统和账户信息
+            # 获取系统信息
             sys_info = await self.get_system_info()
-            acc_info = await self.get_account_info()
             
-            # 格式化账户信息
-            account_str = "No account information available"
-            positions_str = "No positions"
-            
-            if acc_info.get('account'):
-                acc = acc_info['account']
-                account_str = (
-                    f"Balance: <code>${acc.get('balance', 0):.2f}</code>\n"
-                    f"Equity: <code>${acc.get('equity', 0):.2f}</code>\n"
-                    f"Margin Level: <code>{acc.get('marginLevel', 0):.2f}%</code>\n"
-                    f"Free Margin: <code>${acc.get('freeMargin', 0):.2f}</code>"
-                )
-            
-            if acc_info.get('positions'):
-                positions = acc_info['positions']
-                if positions:
-                    positions_str = "\n".join([
-                        f"• {p.get('symbol', 'Unknown')}: {p.get('type', 'Unknown')} "
-                        f"{p.get('volume', 0)} lots @ {p.get('price', 0):.2f} "
-                        f"(P/L: ${p.get('profit', 0):.2f})"
-                        for p in positions
-                    ])
-            
-            # Send startup notification
+            # 发送启动通知
             await self.message_handler.send_trade_notification(
                 "🚀 Trading System Online\n\n"
                 "💻 System Information:\n"
@@ -180,12 +155,14 @@ class ForwardBot:
                 f"Free Disk: <code>{sys_info.get('disk_free', 'N/A'):.1f} GB</code>\n"
                 f"Platform: <code>{sys_info.get('platform', 'N/A')}</code>\n"
                 f"Python: <code>{sys_info.get('python_version', 'N/A')}</code>\n\n"
-                "💰 Account Information:\n"
-                f"{account_str}\n\n"
-                "📊 Current Positions:\n"
-                f"{positions_str}\n\n"
                 f"⏰ Start Time: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
             )
+            
+            # 等待账户连接就绪
+            if self.trade_manager:
+                await self.trade_manager.wait_connected()
+                # 获取并发送账户信息
+                await self._send_account_status()
             
             logging.info("Bot started successfully!")
             
@@ -198,6 +175,43 @@ class ForwardBot:
         finally:
             await self.stop()
 
+    async def _send_account_status(self):
+        """发送账户状态信息"""
+        try:
+            if not self.trade_manager or not self.trade_manager.connection:
+                return
+                
+            # 获取账户信息
+            account = await self.trade_manager.connection.get_account_information()
+            positions = await self.trade_manager.connection.get_positions()
+            
+            # 格式化账户信息
+            account_str = (
+                "💰 Account Information:\n"
+                f"Balance: <code>${account.get('balance', 0):.2f}</code>\n"
+                f"Equity: <code>${account.get('equity', 0):.2f}</code>\n"
+                f"Margin Level: <code>{account.get('marginLevel', 0):.2f}%</code>\n"
+                f"Free Margin: <code>${account.get('freeMargin', 0):.2f}</code>"
+            )
+            
+            # 格式化持仓信息
+            positions_str = "No open positions"
+            if positions:
+                positions_str = "📊 Current Positions:\n" + "\n".join([
+                    f"• {p.get('symbol', 'Unknown')}: {p.get('type', 'Unknown')} "
+                    f"{p.get('volume', 0)} lots @ {p.get('openPrice', 0):.2f} "
+                    f"(P/L: ${p.get('unrealizedProfit', 0):.2f})"
+                    for p in positions
+                ])
+            
+            # 发送账户状态通知
+            await self.message_handler.send_trade_notification(
+                f"{account_str}\n\n{positions_str}"
+            )
+            
+        except Exception as e:
+            logging.error(f"Error sending account status: {e}")
+
     async def stop(self):
         """Stop the bot"""
         try:
@@ -205,16 +219,17 @@ class ForwardBot:
             if self.message_handler:
                 try:
                     await self.message_handler.send_trade_notification(
-                        "🔌 Bot System Offline\n\n"
-                        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        "� Trading System Offline\n\n"
+                        f"⏰ Stop Time: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
                     )
                 except:
                     pass
-                await self.message_handler.cleanup()
                 
-            await self.application.stop()
-            await self.client.disconnect()
-            self.db.cleanup()
+            # Stop components
+            if hasattr(self.application, 'stop'):
+                await self.application.stop()
+            if hasattr(self.client, 'disconnect'):
+                await self.client.disconnect()
             
         except Exception as e:
             logging.error(f"Error stopping bot: {e}")
