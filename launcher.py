@@ -217,70 +217,63 @@ class AsyncBotLauncher:
             await self.initialize_components()
 
             # Send startup notification
-            if self.signal_processor:
+            if self._bot and hasattr(self._bot, 'message_handler'):
                 account_info = {}
                 active_trades = 0
                 if self.trade_manager:
                     account_info = await self.trade_manager.get_account_info()
                     positions = await self.trade_manager.get_positions()
-                    active_trades = len(positions)
+                    active_trades = len(positions) if positions else 0
                 
                 notification_data = {
-                    'account_id': self.config.ACCOUNT_ID if self.trade_manager else 'N/A',
-                    'balance': account_info.get('balance', 0),
+                    'account_id': self.config.ACCOUNT_ID,
+                    'balance': account_info.get('balance', 0) if account_info else 0,
                     'active_trades': active_trades,
                     'server_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
                 
-                notification_msg = self.signal_processor.format_trade_notification(
-                    'system_startup',
-                    notification_data
+                await self._bot.message_handler.send_trade_notification(
+                    "🚀 Trading Bot Started\n\n"
+                    f"💼 Account: {notification_data['account_id']}\n"
+                    f"💰 Balance: ${notification_data['balance']:.2f}\n"
+                    f"📊 Active Trades: {notification_data['active_trades']}\n"
+                    f"⏰ Time: {notification_data['server_time']}"
                 )
-                await self.signal_processor.send_trade_notification(notification_msg)
 
             logging.info("Bot started successfully")
 
         except Exception as e:
             logging.error(f"Error starting bot: {e}")
-            if self.signal_processor:
-                notification_data = {
-                    'error_type': 'Startup Error',
-                    'error_message': str(e),
-                    'error_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-                notification_msg = self.signal_processor.format_trade_notification(
-                    'system_error',
-                    notification_data
+            if self._bot and hasattr(self._bot, 'message_handler'):
+                await self._bot.message_handler.send_trade_notification(
+                    f"⚠️ System Error\n\n"
+                    f"Type: Startup Error\n"
+                    f"Message: {str(e)}\n"
+                    f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                await self.signal_processor.send_trade_notification(notification_msg)
             raise
 
     async def stop(self):
         """Stop the bot"""
         try:
             # Send shutdown notification
-            if self.signal_processor:
+            if self._bot and hasattr(self._bot, 'message_handler'):
                 account_info = {}
                 daily_profit = 0
                 if self.trade_manager:
                     account_info = await self.trade_manager.get_account_info()
                     # Calculate daily profit if start time is available
-                    if self.start_time:
+                    if self.start_time and account_info:
                         initial_balance = account_info.get('balance', 0) - account_info.get('profit', 0)
                         daily_profit = account_info.get('balance', 0) - initial_balance
                 
-                notification_data = {
-                    'account_id': self.config.ACCOUNT_ID if self.trade_manager else 'N/A',
-                    'balance': account_info.get('balance', 0),
-                    'daily_profit': daily_profit,
-                    'server_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-                
-                notification_msg = self.signal_processor.format_trade_notification(
-                    'system_shutdown',
-                    notification_data
+                await self._bot.message_handler.send_trade_notification(
+                    "🔄 Trading Bot Stopped\n\n"
+                    f"💼 Account: {self.config.ACCOUNT_ID}\n"
+                    f"💰 Final Balance: ${account_info.get('balance', 0):.2f}\n"
+                    f"📈 Daily P/L: ${daily_profit:.2f}\n"
+                    f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                await self.signal_processor.send_trade_notification(notification_msg)
 
             # Cleanup components
             if self.position_manager:
@@ -293,17 +286,13 @@ class AsyncBotLauncher:
 
         except Exception as e:
             logging.error(f"Error stopping bot: {e}")
-            if self.signal_processor:
-                notification_data = {
-                    'error_type': 'Shutdown Error',
-                    'error_message': str(e),
-                    'error_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-                notification_msg = self.signal_processor.format_trade_notification(
-                    'system_error',
-                    notification_data
+            if self._bot and hasattr(self._bot, 'message_handler'):
+                await self._bot.message_handler.send_trade_notification(
+                    f"⚠️ System Error\n\n"
+                    f"Type: Shutdown Error\n"
+                    f"Message: {str(e)}\n"
+                    f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                await self.signal_processor.send_trade_notification(notification_msg)
             raise
 
 async def main():

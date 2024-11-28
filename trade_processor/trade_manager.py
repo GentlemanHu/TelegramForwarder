@@ -569,14 +569,20 @@ class TradeManager:
             logging.error(f"Failed to get candles for {symbol}: {str(e)}")
             return None
 
-    async def get_account_info(self) -> Optional[Dict[str, Any]]:
-        """Get account information"""
-        if not self._initialized:
-            await self.initialize()
-            
+    async def get_account_info(self) -> Dict:
+        """Get account information including balance, equity, and margin"""
         try:
-            info = await self.connection.get_account_information()
-            return info
+            if not self._initialized:
+                await self.initialize()
+            
+            if not self.connection:
+                logging.error("No connection available")
+                return None
+                
+            # 使用connection对象获取账户信息
+            account_info = await self.connection.get_account_information()
+            return account_info
+            
         except Exception as e:
             logging.error(f"Error getting account info: {e}")
             return None
