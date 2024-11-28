@@ -492,6 +492,17 @@ class MyMessageHandler:
                     "Profit: <code>{profit:.2f}</code> ({profit_pct:.2f}%)\n"
                     "Duration: {duration}"
                 ),
+                'order_updated': (
+                    "📝 <b>Order Updated</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
+                    "Entry Price: <code>{entry_price:.5f}</code>\n"
+                    "Current Price: <code>{current_price:.5f}</code>\n"
+                    "Stop Loss: <code>{stop_loss:.5f}</code>\n"
+                    "Take Profit: <code>{take_profit:.5f}</code>\n"
+                    "Profit: <code>{profit:.2f}</code>"
+                ),
                 'order_modified': (
                     "🔄 <b>Position Modified</b>\n\n"
                     "Symbol: <code>{symbol}</code>\n"
