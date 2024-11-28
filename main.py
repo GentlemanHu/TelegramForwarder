@@ -24,6 +24,8 @@ from telegram.ext import (
 )
 from locales import get_text
 from datetime import datetime
+import psutil
+import platform
 
 class ForwardBot:
     def __init__(self, config, trade_manager=None, position_manager=None, 
@@ -82,6 +84,43 @@ class ForwardBot:
             logging.error(f"Error initializing bot: {e}")
             return False
 
+    async def get_system_info(self):
+        """获取系统信息"""
+        try:
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            
+            return {
+                'cpu_percent': cpu_percent,
+                'memory_used': memory.percent,
+                'memory_available': memory.available / (1024 * 1024 * 1024),  # GB
+                'disk_used': disk.percent,
+                'disk_free': disk.free / (1024 * 1024 * 1024),  # GB
+                'platform': platform.platform(),
+                'python_version': platform.python_version()
+            }
+        except Exception as e:
+            logging.error(f"Error getting system info: {e}")
+            return {}
+
+    async def get_account_info(self):
+        """获取账户信息"""
+        try:
+            if not self.trade_manager:
+                return {}
+                
+            account_info = await self.trade_manager.get_account_info()
+            positions = await self.trade_manager.get_positions()
+            
+            return {
+                'account': account_info,
+                'positions': positions
+            }
+        except Exception as e:
+            logging.error(f"Error getting account info: {e}")
+            return {}
+
     async def start(self):
         """Start the bot"""
         try:
@@ -93,20 +132,59 @@ class ForwardBot:
             await self.client.start(phone=self.config.PHONE_NUMBER)
             
             # Register message handler
-            @self.client.on(events.NewMessage)
-            async def handle_new_message(event):
-                await self.message_handler.handle_channel_message(event)
+            self.client.add_event_handler(
+                self.message_handler.handle_channel_message,
+                events.NewMessage(chats=self.config.CHANNEL_IDS)
+            )
             
             # Start bot
             await self.application.initialize()
             await self.application.start()
             await self.application.updater.start_polling()
             
+            # 获取系统和账户信息
+            sys_info = await self.get_system_info()
+            acc_info = await self.get_account_info()
+            
+            # 格式化账户信息
+            account_str = "No account information available"
+            positions_str = "No positions"
+            
+            if acc_info.get('account'):
+                acc = acc_info['account']
+                account_str = (
+                    f"Balance: <code>${acc.get('balance', 0):.2f}</code>\n"
+                    f"Equity: <code>${acc.get('equity', 0):.2f}</code>\n"
+                    f"Margin Level: <code>{acc.get('marginLevel', 0):.2f}%</code>\n"
+                    f"Free Margin: <code>${acc.get('freeMargin', 0):.2f}</code>"
+                )
+            
+            if acc_info.get('positions'):
+                positions = acc_info['positions']
+                if positions:
+                    positions_str = "\n".join([
+                        f"• {p.get('symbol', 'Unknown')}: {p.get('type', 'Unknown')} "
+                        f"{p.get('volume', 0)} lots @ {p.get('price', 0):.2f} "
+                        f"(P/L: ${p.get('profit', 0):.2f})"
+                        for p in positions
+                    ])
+            
             # Send startup notification
             await self.message_handler.send_trade_notification(
-                "🤖 Bot System Online\n\n"
-                f"Owner ID: {self.config.OWNER_ID}\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                "🚀 Trading System Online\n\n"
+                "💻 System Information:\n"
+                f"CPU Usage: <code>{sys_info.get('cpu_percent', 'N/A')}%</code>\n"
+                f"Memory Usage: <code>{sys_info.get('memory_used', 'N/A')}%</code>\n"
+                f"Free Memory: <code>{sys_info.get('memory_available', 'N/A'):.1f} GB</code>\n"
+                f"Disk Usage: <code>{sys_info.get('disk_used', 'N/A')}%</code>\n"
+                f"Free Disk: <code>{sys_info.get('disk_free', 'N/A'):.1f} GB</code>\n"
+                f"Platform: <code>{sys_info.get('platform', 'N/A')}</code>\n"
+                f"Python: <code>{sys_info.get('python_version', 'N/A')}</code>\n\n"
+                "💰 Account Information:\n"
+                f"{account_str}\n\n"
+                "📊 Current Positions:\n"
+                f"{positions_str}\n\n"
+                f"⏰ Start Time: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
             )
             
             logging.info("Bot started successfully!")

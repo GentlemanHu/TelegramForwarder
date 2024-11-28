@@ -1170,3 +1170,89 @@ class TradeManager:
                         
         except Exception as e:
             logging.error(f"Error handling candle update: {e}")
+
+    async def _notify_trade_execution(self, order_result, order_type="market"):
+        """发送交易执行通知"""
+        try:
+            if not self.message_handler:
+                return
+                
+            symbol = order_result.get('symbol', 'Unknown')
+            direction = order_result.get('direction', 'Unknown')
+            volume = order_result.get('volume', 0)
+            price = order_result.get('price', 'Market')
+            order_id = order_result.get('orderId', 'Unknown')
+            
+            emoji = "🟢" if direction == "buy" else "🔴"
+            direction = direction.upper()
+            
+            message = (
+                f"{emoji} New {order_type.upper()} Order Executed\n\n"
+                f"Symbol: <code>{symbol}</code>\n"
+                f"Direction: <code>{direction}</code>\n"
+                f"Volume: <code>{volume}</code>\n"
+                f"Price: <code>{price}</code>\n"
+                f"Order ID: <code>{order_id}</code>"
+            )
+            
+            await self.message_handler.send_trade_notification(message)
+            
+        except Exception as e:
+            logging.error(f"Failed to send trade execution notification: {e}")
+
+    async def _notify_position_update(self, position):
+        """发送持仓更新通知"""
+        try:
+            if not self.message_handler:
+                return
+                
+            symbol = position.get('symbol', 'Unknown')
+            type_ = position.get('type', 'Unknown')
+            volume = position.get('volume', 0)
+            profit = position.get('profit', 0)
+            
+            emoji = "📊"
+            if profit > 0:
+                emoji = "📈"
+            elif profit < 0:
+                emoji = "📉"
+                
+            message = (
+                f"{emoji} Position Update\n\n"
+                f"Symbol: <code>{symbol}</code>\n"
+                f"Type: <code>{type_}</code>\n"
+                f"Volume: <code>{volume}</code>\n"
+                f"Current Profit: <code>{profit:.2f}</code>"
+            )
+            
+            await self.message_handler.send_trade_notification(message)
+            
+        except Exception as e:
+            logging.error(f"Failed to send position update notification: {e}")
+
+    async def place_market_order(self, symbol, direction, volume, sl=None, tp=None):
+        """下市价单"""
+        try:
+            # 原有的下单逻辑
+            order_result = await super().place_market_order(symbol, direction, volume, sl, tp)
+            
+            # 发送交易通知
+            await self._notify_trade_execution(order_result)
+            
+            return order_result
+            
+        except Exception as e:
+            logging.error(f"Error placing market order: {e}")
+            raise
+
+    async def on_position_update(self, position):
+        """持仓更新回调"""
+        try:
+            # 原有的持仓更新逻辑
+            await super().on_position_update(position)
+            
+            # 发送持仓更新通知
+            await self._notify_position_update(position)
+            
+        except Exception as e:
+            logging.error(f"Error handling position update: {e}")
