@@ -231,6 +231,9 @@ class AsyncBotLauncher:
 
             # 只在telegram模式下发送启动通知
             if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:
+                #TODO - 手动重新设置message_handler到trademanager; 需要优化
+                self.trade_manager.message_handler = self._bot.message_handler
+                
                 account_info = {}
                 active_trades = 0
                 if self.trade_manager:
