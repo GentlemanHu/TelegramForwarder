@@ -106,6 +106,18 @@ TRANSLATIONS = {
 
 *For more help or to report issues, contact the bot administrator.*
 """,
+        'positions_title': "📊 Current Positions Summary",
+        'no_positions': "No open positions",
+        'total_positions': "Total Positions: {count}",
+        'total_volume': "Total Volume: {volume:.2f} lots",
+        'total_pl': "Total P/L: {profit:.2f}",
+        'position_details': "Position Details:",
+        'position_info': "{emoji} {symbol}: {volume} lots @ {price:.5f}\n   P/L: {profit:.2f} ({type})",
+        'breakeven_success': "✅ Modified {count} profitable positions to breakeven",
+        'closeall_confirm': "⚠️ Are you sure you want to close ALL positions?",
+        'closeall_cancelled': "Operation cancelled",
+        'closeall_success': "✅ Successfully closed {count} positions",
+        'trade_manager_error': "❌ Trade manager not available",
         'delete_channel_title': 'Select channel to delete:',
         'manage_pair_title': 'Pair Management for {channel}',
         'no_pairs': 'No forwarding pairs configured',
@@ -217,6 +229,18 @@ TRANSLATIONS = {
 'processing': "正在处理您的请求...",
 'invalid_forward': "❌ 请从目标频道转发消息或使用频道选择器。",
 'channel_not_found': "❌ 未找到频道。请重试。",
+        'positions_title': "📊 当前持仓汇总",
+        'no_positions': "没有开仓",
+        'total_positions': "总持仓数: {count}",
+        'total_volume': "总手数: {volume:.2f} 手",
+        'total_pl': "总盈亏: {profit:.2f}",
+        'position_details': "持仓详情:",
+        'position_info': "{emoji} {symbol}: {volume} 手 @ {price:.5f}\n   盈亏: {profit:.2f} ({type})",
+        'breakeven_success': "✅ 已将 {count} 个盈利仓位的止损移至入场价",
+        'closeall_confirm': "⚠️ 确定要关闭所有持仓吗？",
+        'closeall_cancelled': "操作已取消",
+        'closeall_success': "✅ 成功关闭 {count} 个持仓",
+        'trade_manager_error': "❌ 交易管理器不可用",
         'help_message': """
 📚 *频道转发机器人帮助*
 
@@ -224,6 +248,9 @@ TRANSLATIONS = {
 /start - 启动机器人
 /channels - 打开频道管理菜单
 /language - 更改机器人语言
+/positions - 查看所有持仓
+/breakeven - 将盈利仓位止损移至入场价
+/closeall - 关闭所有持仓
 /help - 显示此帮助信息
 
 *频道管理：*
@@ -235,6 +262,11 @@ TRANSLATIONS = {
 *频道类型：*
 • *监控频道：* 用于监控消息的源频道
 • *转发频道：* 用于接收转发消息的目标频道
+
+*交易命令：*
+• */positions:* 查看所有持仓汇总
+• */breakeven:* 将盈利仓位止损移至入场价
+• */closeall:* 关闭所有持仓（需确认）
 
 *添加频道：*
 1. 使用 /channels 命令

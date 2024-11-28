@@ -258,9 +258,12 @@ class ForwardBot:
         """设置消息处理器"""
         # 命令处理器
         self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("channels", self.channels_command))
-        self.application.add_handler(CommandHandler("language", self.language_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
+        self.application.add_handler(CommandHandler("language", self.language_command))
+        self.application.add_handler(CommandHandler("channels", self.channels_command))
+        self.application.add_handler(CommandHandler("positions", self.positions_command))
+        self.application.add_handler(CommandHandler("breakeven", self.breakeven_command))
+        self.application.add_handler(CommandHandler("closeall", self.closeall_command))
         
         # 添加频道管理处理器
         for handler in self.channel_manager.get_handlers():
@@ -268,7 +271,6 @@ class ForwardBot:
         
         # 添加错误处理器
         self.application.add_error_handler(self.error_handler)
-
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理错误"""
@@ -355,6 +357,151 @@ class ForwardBot:
             return
 
         await self.channel_manager.show_channel_management(update, context)
+
+    async def positions_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """查询所有持仓信息汇总"""
+        try:
+            lang = self.db.get_user_language(update.effective_user.id)
+            
+            if not self.trade_manager:
+                await update.message.reply_text(get_text(lang, 'trade_manager_error'))
+                return
+                
+            positions = await self.trade_manager.get_positions()
+            if not positions:
+                await update.message.reply_text(get_text(lang, 'no_positions'))
+                return
+                
+            # 计算总体统计信息
+            total_profit = sum(float(p.get('profit', 0)) for p in positions)
+            total_volume = sum(float(p.get('volume', 0)) for p in positions)
+            
+            # 构建详细信息
+            details = []
+            for pos in positions:
+                profit = float(pos.get('profit', 0))
+                emoji = "🟢" if profit >= 0 else "🔴"
+                details.append(get_text(
+                    lang, 'position_info',
+                    emoji=emoji,
+                    symbol=pos['symbol'],
+                    volume=pos['volume'],
+                    price=float(pos['openPrice']),
+                    profit=profit,
+                    type=pos.get('type', 'Unknown')
+                ))
+            
+            # 构建消息
+            message = (
+                f"<b>{get_text(lang, 'positions_title')}</b>\n\n"
+                f"{get_text(lang, 'total_positions', count=len(positions))}\n"
+                f"{get_text(lang, 'total_volume', volume=total_volume)}\n"
+                f"{get_text(lang, 'total_pl', profit=total_profit)}\n\n"
+                f"<b>{get_text(lang, 'position_details')}</b>\n" + 
+                "\n".join(details)
+            )
+            
+            await update.message.reply_text(message, parse_mode='HTML')
+            
+        except Exception as e:
+            logging.error(f"Error in positions command: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def breakeven_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """一键设置所有盈利仓位的sl到入场价"""
+        try:
+            lang = self.db.get_user_language(update.effective_user.id)
+            
+            if not self.trade_manager:
+                await update.message.reply_text(get_text(lang, 'trade_manager_error'))
+                return
+                
+            positions = await self.trade_manager.get_positions()
+            if not positions:
+                await update.message.reply_text(get_text(lang, 'no_positions'))
+                return
+                
+            # 筛选盈利仓位并设置止损
+            modified_count = 0
+            for pos in positions:
+                if float(pos.get('profit', 0)) > 0:
+                    try:
+                        await self.trade_manager.modify_position_sl(
+                            pos['id'],
+                            pos['openPrice']  # 设置止损到入场价
+                        )
+                        modified_count += 1
+                    except Exception as e:
+                        logging.error(f"Error modifying position {pos['id']}: {e}")
+            
+            await update.message.reply_text(
+                get_text(lang, 'breakeven_success', count=modified_count)
+            )
+            
+        except Exception as e:
+            logging.error(f"Error in breakeven command: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def closeall_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """关闭所有持仓"""
+        try:
+            lang = self.db.get_user_language(update.effective_user.id)
+            
+            if not self.trade_manager:
+                await update.message.reply_text(get_text(lang, 'trade_manager_error'))
+                return
+                
+            # 添加确认按钮
+            keyboard = [
+                [
+                    InlineKeyboardButton("Yes ✅", callback_data='closeall_confirm'),
+                    InlineKeyboardButton("No ❌", callback_data='closeall_cancel')
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                get_text(lang, 'closeall_confirm'),
+                reply_markup=reply_markup
+            )
+            
+        except Exception as e:
+            logging.error(f"Error in closeall command: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def closeall_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理关闭所有持仓的确认回调"""
+        query = update.callback_query
+        await query.answer()
+        
+        lang = self.db.get_user_language(query.from_user.id)
+        
+        if query.data == 'closeall_cancel':
+            await query.edit_message_text(get_text(lang, 'closeall_cancelled'))
+            return
+            
+        if query.data == 'closeall_confirm':
+            try:
+                positions = await self.trade_manager.get_positions()
+                if not positions:
+                    await query.edit_message_text(get_text(lang, 'no_positions'))
+                    return
+                    
+                closed_count = 0
+                for pos in positions:
+                    try:
+                        await self.trade_manager.close_position(pos['id'])
+                        closed_count += 1
+                    except Exception as e:
+                        logging.error(f"Error closing position {pos['id']}: {e}")
+                
+                await query.edit_message_text(
+                    get_text(lang, 'closeall_success', count=closed_count)
+                )
+                
+            except Exception as e:
+                logging.error(f"Error in closeall callback: {e}")
+                await query.edit_message_text(f"❌ Error: {str(e)}")
 
 # main.py (部分更新)
 

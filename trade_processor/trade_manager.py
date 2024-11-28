@@ -1366,3 +1366,91 @@ class TradeManager:
         except Exception as e:
             logging.error(f"Error modifying position: {e}")
             raise
+
+    async def modify_position_sl(self, position_id: str, stop_loss: float) -> bool:
+        """修改持仓的止损价格
+        
+        Args:
+            position_id: 持仓ID
+            stop_loss: 新的止损价格
+            
+        Returns:
+            bool: 是否修改成功
+        """
+        try:
+            if not self.connection:
+                logging.error("No connection available")
+                return False
+                
+            # 获取持仓信息
+            position = await self.connection.get_position(position_id)
+            if not position:
+                logging.error(f"Position {position_id} not found")
+                return False
+            
+            # 修改止损
+            await self.connection.modify_position(
+                position_id,
+                stop_loss=stop_loss
+            )
+            
+            # 发送通知
+            if self.message_handler:
+                notification_data = {
+                    'symbol': position.symbol,
+                    'type': position.type,
+                    'volume': position.volume,
+                    'old_sl': position.stopLoss,
+                    'new_sl': stop_loss
+                }
+                await self._send_notification('sl_modified', notification_data)
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error modifying position {position_id}: {e}")
+            return False
+
+    async def close_position(self, position_id: str) -> bool:
+        """关闭指定持仓
+        
+        Args:
+            position_id: 持仓ID
+            
+        Returns:
+            bool: 是否关闭成功
+        """
+        try:
+            if not self.connection:
+                logging.error("No connection available")
+                return False
+                
+            # 获取持仓信息
+            position = await self.connection.get_position(position_id)
+            if not position:
+                logging.error(f"Position {position_id} not found")
+                return False
+            
+            # 关闭持仓
+            result = await self.connection.close_position(position_id)
+            if not result:
+                logging.error(f"Failed to close position {position_id}")
+                return False
+            
+            # 发送通知
+            if self.message_handler:
+                notification_data = {
+                    'symbol': position.symbol,
+                    'type': position.type,
+                    'volume': position.volume,
+                    'entry_price': position.openPrice,
+                    'close_price': position.currentPrice,
+                    'profit': position.profit
+                }
+                await self._send_notification('order_closed', notification_data)
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error closing position {position_id}: {e}")
+            return False

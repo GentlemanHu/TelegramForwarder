@@ -25,6 +25,9 @@ class BotCommands:
                     ('start', 'Start the bot'),
                     ('channels', 'Manage channels and forwarding'),
                     ('language', 'Change language settings'),
+                    ('positions', 'View all open positions'),
+                    ('breakeven', 'Set stop loss to entry price for profitable positions'),
+                    ('closeall', 'Close all open positions'),
                     ('help', 'Show help message'),
                 ],
                 'scope': 'default'
@@ -34,6 +37,9 @@ class BotCommands:
                     ('start', '启动机器人'),
                     ('channels', '管理频道和转发'),
                     ('language', '更改语言设置'),
+                    ('positions', '查看所有持仓'),
+                    ('breakeven', '将盈利仓位止损移至入场价'),
+                    ('closeall', '关闭所有持仓'),
                     ('help', '显示帮助信息'),
                 ],
                 'scope': 'default'
