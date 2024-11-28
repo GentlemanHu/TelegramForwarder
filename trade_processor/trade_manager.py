@@ -1173,62 +1173,67 @@ class TradeManager:
 
     async def _notify_trade_execution(self, order_result, order_type="market"):
         """发送交易执行通知"""
+        if not self.message_handler:
+            return
+            
         try:
-            if not self.message_handler:
-                return
-                
-            symbol = order_result.get('symbol', 'Unknown')
-            direction = order_result.get('direction', 'Unknown')
-            volume = order_result.get('volume', 0)
-            price = order_result.get('price', 'Market')
-            order_id = order_result.get('orderId', 'Unknown')
+            notification_data = {
+                'symbol': order_result.symbol,
+                'type': order_result.type,
+                'volume': order_result.volume,
+                'entry_price': order_result.openPrice,
+                'stop_loss': order_result.stopLoss,
+                'take_profit': order_result.takeProfit
+            }
             
-            emoji = "🟢" if direction == "buy" else "🔴"
-            direction = direction.upper()
-            
-            message = (
-                f"{emoji} New {order_type.upper()} Order Executed\n\n"
-                f"Symbol: <code>{symbol}</code>\n"
-                f"Direction: <code>{direction}</code>\n"
-                f"Volume: <code>{volume}</code>\n"
-                f"Price: <code>{price}</code>\n"
-                f"Order ID: <code>{order_id}</code>"
+            event_type = 'order_opened' if order_type == "market" else 'order_pending'
+            notification_msg = self.message_handler.format_trade_notification(
+                event_type,
+                notification_data
             )
-            
-            await self.message_handler.send_trade_notification(message)
+            await self.message_handler.send_trade_notification(notification_msg)
             
         except Exception as e:
-            logging.error(f"Failed to send trade execution notification: {e}")
-
+            logging.error(f"Error sending trade execution notification: {e}")
+            
     async def _notify_position_update(self, position):
         """发送持仓更新通知"""
+        if not self.message_handler:
+            return
+            
         try:
-            if not self.message_handler:
-                return
-                
-            symbol = position.get('symbol', 'Unknown')
-            type_ = position.get('type', 'Unknown')
-            volume = position.get('volume', 0)
-            profit = position.get('profit', 0)
+            notification_data = {
+                'symbol': position.symbol,
+                'type': position.type,
+                'volume': position.volume,
+                'entry_price': position.openPrice,
+                'current_price': position.currentPrice,
+                'profit': position.profit,
+                'stop_loss': position.stopLoss,
+                'take_profit': position.takeProfit
+            }
             
-            emoji = "📊"
-            if profit > 0:
-                emoji = "📈"
-            elif profit < 0:
-                emoji = "📉"
+            if hasattr(position, 'state') and position.state == 'CLOSED':
+                notification_data.update({
+                    'close_price': position.closePrice,
+                    'profit_pct': (position.profit / (position.openPrice * position.volume)) * 100,
+                    'duration': str(
+                        datetime.fromisoformat(position.closeTime) - 
+                        datetime.fromisoformat(position.openTime)
+                    ) if position.closeTime and position.openTime else 'N/A'
+                })
+                event_type = 'order_closed'
+            else:
+                event_type = 'position_updated'
                 
-            message = (
-                f"{emoji} Position Update\n\n"
-                f"Symbol: <code>{symbol}</code>\n"
-                f"Type: <code>{type_}</code>\n"
-                f"Volume: <code>{volume}</code>\n"
-                f"Current Profit: <code>{profit:.2f}</code>"
+            notification_msg = self.message_handler.format_trade_notification(
+                event_type,
+                notification_data
             )
-            
-            await self.message_handler.send_trade_notification(message)
+            await self.message_handler.send_trade_notification(notification_msg)
             
         except Exception as e:
-            logging.error(f"Failed to send position update notification: {e}")
+            logging.error(f"Error sending position update notification: {e}")
 
     async def place_market_order(self, symbol, direction, volume, sl=None, tp=None):
         """下市价单"""

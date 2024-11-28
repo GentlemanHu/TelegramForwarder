@@ -182,39 +182,51 @@ class ForwardBot:
         """发送账户状态信息"""
         try:
             if not self.trade_manager or not self.trade_manager.connection:
+                logging.warning("Trade manager or connection not available")
                 return
                 
             # 获取账户信息
-            connection = self.trade_manager.connection
-            account = connection.account_information
-            positions = connection.positions
+            terminal_state = self.trade_manager.connection.terminal_state
+            if not terminal_state:
+                logging.warning("Terminal state not available")
+                return
+                
+            account = terminal_state.account_information
+            positions = terminal_state.positions
             
+            if not account:
+                logging.warning("Account information not available")
+                return
+                
             # 格式化账户信息
             account_str = (
                 "💰 Account Information:\n"
-                f"Balance: <code>${account.get('balance', 0):.2f}</code>\n"
-                f"Equity: <code>${account.get('equity', 0):.2f}</code>\n"
-                f"Margin Level: <code>{account.get('margin_level', 0):.2f}%</code>\n"
-                f"Free Margin: <code>${account.get('free_margin', 0):.2f}</code>"
+                f"Balance: <code>${account.balance:.2f}</code>\n"
+                f"Equity: <code>${account.equity:.2f}</code>\n"
+                f"Margin Level: <code>{account.marginLevel:.2f}%</code>\n"
+                f"Free Margin: <code>${account.freeMargin:.2f}</code>"
             )
             
             # 格式化持仓信息
             positions_str = "No open positions"
             if positions:
                 positions_str = "📊 Current Positions:\n" + "\n".join([
-                    f"• {p.get('symbol', 'Unknown')}: {p.get('type', 'Unknown')} "
-                    f"{p.get('volume', 0)} lots @ {p.get('open_price', 0):.2f} "
-                    f"(P/L: ${p.get('profit', 0):.2f})"
+                    f"• {p.symbol}: {p.type} "
+                    f"{p.volume} lots @ {p.openPrice:.5f} "
+                    f"(P/L: ${p.profit:.2f})"
                     for p in positions
                 ])
             
             # 发送账户状态通知
             await self.message_handler.send_trade_notification(
-                f"{account_str}\n\n{positions_str}"
+                f"{account_str}\n\n{positions_str}",
+                parse_mode='HTML'
             )
             
         except Exception as e:
             logging.error(f"Error sending account status: {e}")
+            if hasattr(e, '__dict__'):
+                logging.error(f"Error details: {e.__dict__}")
 
     async def stop(self):
         """Stop the bot"""
