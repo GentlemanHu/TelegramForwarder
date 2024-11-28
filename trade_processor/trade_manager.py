@@ -1174,6 +1174,7 @@ class TradeManager:
     async def _send_notification(self, event_type: str, data: dict):
         """异步发送通知,不影响主流程"""
         if not self.message_handler:
+            logging.error("No message handler available")
             return
             
         try:

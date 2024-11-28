@@ -274,6 +274,7 @@ class MyMessageHandler:
             message: The notification message
             parse_mode: Message parse mode (HTML/Markdown)
         """
+        logging.info(f"Attempting to send notification: {message}")
         if not self._initialized:
             logging.warning("Attempting to send notification before initialization")
             await self.initialize()
@@ -284,6 +285,7 @@ class MyMessageHandler:
                 text=message,
                 parse_mode=parse_mode
             )
+            logging.info("Notification sent successfully")
         except Exception as e:
             logging.error(f"Failed to send trade notification: {e}")
             raise
