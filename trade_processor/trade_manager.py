@@ -1173,6 +1173,7 @@ class TradeManager:
 
     async def _send_notification(self, event_type: str, data: dict):
         """异步发送通知,不影响主流程"""
+        logging.info(f"Attempting to send notification for event: {event_type}")
         if not self.message_handler:
             logging.error("No message handler available")
             return
@@ -1182,11 +1183,11 @@ class TradeManager:
                 event_type,
                 data
             )
-            asyncio.create_task(
-                self.message_handler.send_trade_notification(notification_msg)
-            )
+            logging.info(f"Formatted notification message: {notification_msg}")
+            await self.message_handler.send_trade_notification(notification_msg)
+            logging.info("Notification sent successfully")
         except Exception as e:
-            logging.error(f"Error sending notification: {e}")
+            logging.error(f"Error sending notification: {e}", exc_info=True)
 
     async def place_market_order(self, symbol, direction, volume, sl=None, tp=None):
         """下市价单"""

@@ -230,6 +230,10 @@ class AsyncBotLauncher:
                 raise Exception("Failed to initialize components")
 
             # 只在telegram模式下发送启动通知
+            logging.info(f"Current run mode: {self.run_mode}")
+            logging.info(f"Bot initialized: {self._bot is not None}")
+            logging.info(f"Bot message handler exists: {hasattr(self._bot, 'message_handler') and self._bot.message_handler is not None}")
+            
             if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:
                 #TODO - 手动重新设置message_handler到trademanager; 需要优化
                 logging.info(f"Setting message_handler to trade_manager: {self._bot.message_handler}")
@@ -267,6 +271,10 @@ class AsyncBotLauncher:
         """Stop the bot"""
         try:
             # 只在telegram模式下发送关闭通知
+            logging.info(f"Current run mode: {self.run_mode}")
+            logging.info(f"Bot initialized: {self._bot is not None}")
+            logging.info(f"Bot message handler exists: {hasattr(self._bot, 'message_handler') and self._bot.message_handler is not None}")
+            
             if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:
                 account_info = {}
                 daily_profit = 0
