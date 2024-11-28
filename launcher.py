@@ -239,6 +239,7 @@ class AsyncBotLauncher:
                 logging.info(f"Setting message_handler to trade_manager: {self._bot.message_handler}")
                 self.trade_manager.message_handler = self._bot.message_handler
                 
+                
                 account_info = {}
                 active_trades = 0
                 if self.trade_manager:

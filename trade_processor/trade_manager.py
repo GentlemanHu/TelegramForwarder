@@ -288,71 +288,73 @@ class TradeManager:
     async def _handle_order_update(self, order: Dict):
         """处理订单更新事件"""
         try:
-            order_id = order.get('id')
-            if not order_id:
-                return
-                
-            logging.info(
-                f"Order update - ID: {order_id}, "
-                f"Symbol: {order.get('symbol')}, "
-                f"Type: {order.get('type')}, "
-                f"State: {order.get('state')}"
-            )
-            
-            # Handle order notifications
-            if self.message_handler:
-                notification_data = {
-                    'symbol': order.get('symbol'),
-                    'type': order.get('type'),
-                    'volume': order.get('volume'),
-                    'entry_price': order.get('openPrice'),
-                    'stop_loss': order.get('stopLoss'),
-                    'take_profit': order.get('takeProfit'),
-                    'error': order.get('error')
-                }
-                
-                # Determine event type based on order state
-                event_type = None
-                if order.get('state') == 'FILLED':
-                    event_type = 'order_opened'
-                elif order.get('state') == 'REJECTED':
-                    event_type = 'order_failed'
-                elif order.get('state') == 'MODIFIED':
-                    event_type = 'order_modified'
-                    changes = []
-                    if order.get('stopLossModified'):
-                        changes.append(f"Stop Loss: {order.get('stopLoss'):.5f}")
-                    if order.get('takeProfitModified'):
-                        changes.append(f"Take Profit: {order.get('takeProfit'):.5f}")
-                    notification_data['changes'] = "\n".join(changes)
-                
-                if event_type:
-                    notification_msg = self.message_handler.format_trade_notification(
-                        event_type,
-                        notification_data
-                    )
-                    await self.message_handler.send_trade_notification(notification_msg)
+            logging.info(f"Handling order update: {order}")
             
             # 通知订单监听器
             for listener in self._order_listeners:
                 try:
                     await listener(order)
                 except Exception as e:
-                    logging.error(f"Error in order listener: {e}")
-                    
+                    logging.error(f"Error in order listener: {e}", exc_info=True)
+
+            # 发送订单更新通知
+            notification_data = {
+                'symbol': order.get('symbol'),
+                'type': order.get('type', 'UNKNOWN'),
+                'volume': order.get('volume', 0),
+                'entry_price': order.get('openPrice', 0),
+                'current_price': order.get('currentPrice', 0),
+                'state': order.get('state', 'UNKNOWN'),
+                'client_id': order.get('clientId'),
+                'profit': order.get('profit', 0)
+            }
+            
+            # 根据订单状态发送不同类型的通知
+            if order.get('state') == 'FILLED':
+                await self._send_notification('order_filled', notification_data)
+            elif order.get('state') == 'CANCELED':
+                await self._send_notification('order_canceled', notification_data)
+            elif order.get('state') == 'EXPIRED':
+                await self._send_notification('order_expired', notification_data)
+            else:
+                await self._send_notification('order_updated', notification_data)
+                
         except Exception as e:
-            logging.error(f"Error handling order update: {e}")
-            if self.message_handler:
-                notification_data = {
-                    'error_type': 'Order Update Error',
-                    'error_message': str(e),
-                    'error_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-                notification_msg = self.message_handler.format_trade_notification(
-                    'system_error',
-                    notification_data
-                )
-                await self.message_handler.send_trade_notification(notification_msg)
+            logging.error(f"Error handling order update: {e}", exc_info=True)
+
+    async def _handle_position_update(self, position: Dict):
+        """处理持仓更新事件"""
+        try:
+            logging.info(f"Handling position update: {position}")
+            
+            # 通知持仓监听器
+            for listener in self._position_listeners:
+                try:
+                    await listener(position)
+                except Exception as e:
+                    logging.error(f"Error in position listener: {e}", exc_info=True)
+
+            # 发送持仓更新通知
+            notification_data = {
+                'symbol': position.get('symbol'),
+                'type': position.get('type', 'UNKNOWN'),
+                'volume': position.get('volume', 0),
+                'entry_price': position.get('entryPrice', 0),
+                'current_price': position.get('currentPrice', 0),
+                'profit': position.get('profit', 0),
+                'stop_loss': position.get('stopLoss'),
+                'take_profit': position.get('takeProfit'),
+                'state': position.get('state', 'UNKNOWN')
+            }
+            
+            # 根据持仓状态发送不同类型的通知
+            if position.get('state') == 'CLOSED':
+                await self._send_notification('position_closed', notification_data)
+            else:
+                await self._send_notification('position_updated', notification_data)
+                
+        except Exception as e:
+            logging.error(f"Error handling position update: {e}", exc_info=True)
 
     async def get_current_price(self, symbol: str) -> Optional[Dict]:
         """获取当前价格"""
@@ -895,11 +897,32 @@ class TradeManager:
                 })
                 await self._wait_order_completion(result['orderId'])
                 logging.info(f"Order placed successfully: {result}")
+                
+                # 发送订单开启通知
+                notification_data = {
+                    'symbol': symbol,
+                    'type': f"{entry_type.upper()}_{direction.upper()}",
+                    'volume': volume,
+                    'entry_price': entry_price if entry_type == 'limit' else result.get('openPrice', 0),
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profits[0] if take_profits else None,
+                    'client_id': id_info['clientId'],
+                    'round_id': round_id
+                }
+                await self._send_notification('order_opened', notification_data)
             
             return result
             
         except Exception as e:
-            logging.error(f"Failed to place order: {str(e)}")
+            logging.error(f"Error placing order: {e}", exc_info=True)
+            # 发送订单失败通知
+            notification_data = {
+                'symbol': symbol,
+                'type': f"{entry_type.upper()}_{direction.upper()}",
+                'volume': volume,
+                'error': str(e)
+            }
+            await self._send_notification('order_failed', notification_data)
             raise
 
     async def calculate_smart_layers(
