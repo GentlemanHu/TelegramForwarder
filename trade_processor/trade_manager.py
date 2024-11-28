@@ -1302,7 +1302,9 @@ class TradeManager:
                 'volume': position.get('volume'),
                 'entry_price': position.get('entryPrice'),
                 'current_price': position.get('currentPrice'),
-                'profit': position.get('profit')
+                'profit': position.get('profit'),
+                'stop_loss': position.get('stopLoss'),
+                'take_profit': position.get('takeProfit')
             }
             await self._send_notification('position_updated', notification_data)
             
@@ -1324,7 +1326,9 @@ class TradeManager:
                 'close_price': order.get('closePrice'),
                 'profit': order.get('profit'),
                 'profit_pct': order.get('profitPercent'),
-                'duration': order.get('duration')
+                'duration': order.get('duration'),
+                'stop_loss': order.get('stopLoss'),
+                'take_profit': order.get('takeProfit')
             }
             await self._send_notification('order_closed', notification_data)
             
@@ -1347,8 +1351,10 @@ class TradeManager:
                 notification_data = {
                     'symbol': position.get('symbol'),
                     'type': position.get('type'),
+                    'volume': position.get('volume'),
                     'old_sl': position.get('stopLoss'),
-                    'new_sl': sl
+                    'new_sl': sl,
+                    'take_profit': position.get('takeProfit')
                 }
                 await self._send_notification('sl_modified', notification_data)
                 
@@ -1357,16 +1363,18 @@ class TradeManager:
                 notification_data = {
                     'symbol': position.get('symbol'),
                     'type': position.get('type'),
+                    'volume': position.get('volume'),
                     'old_tp': position.get('takeProfit'),
-                    'new_tp': tp
+                    'new_tp': tp,
+                    'stop_loss': position.get('stopLoss')
                 }
                 await self._send_notification('tp_modified', notification_data)
                 
             return result
             
         except Exception as e:
-            logging.error(f"Error modifying position: {e}")
-            raise
+            logging.error(f"Error modifying position {position_id}: {e}")
+            return None
 
     async def modify_position_sl(self, position_id: str, stop_loss: float) -> bool:
         """修改持仓的止损价格
@@ -1402,7 +1410,8 @@ class TradeManager:
                     'type': position.get('type'),
                     'volume': position.get('volume'),
                     'old_sl': position.get('stopLoss'),
-                    'new_sl': stop_loss
+                    'new_sl': stop_loss,
+                    'take_profit': position.get('takeProfit')
                 }
                 await self._send_notification('sl_modified', notification_data)
             
