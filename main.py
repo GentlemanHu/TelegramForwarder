@@ -23,6 +23,7 @@ from telegram.ext import (
     filters
 )
 from locales import get_text
+from datetime import datetime
 
 class ForwardBot:
     def __init__(self, config, trade_manager=None, position_manager=None, 
@@ -69,8 +70,12 @@ class ForwardBot:
         try:
             # Set up commands
             await BotCommands.setup_commands(self.application)
-            logging.info("Bot commands initialized successfully")
             
+            # Initialize message handler
+            if not await self.message_handler.initialize():
+                raise Exception("Failed to initialize message handler")
+            
+            logging.info("Bot components initialized successfully")
             return True
             
         except Exception as e:
@@ -81,7 +86,8 @@ class ForwardBot:
         """Start the bot"""
         try:
             # Initialize bot
-            await self.initialize()
+            if not await self.initialize():
+                raise Exception("Failed to initialize bot")
             
             # Start Telethon client
             await self.client.start(phone=self.config.PHONE_NUMBER)
@@ -96,7 +102,14 @@ class ForwardBot:
             await self.application.start()
             await self.application.updater.start_polling()
             
-            print("Bot started successfully!")
+            # Send startup notification
+            await self.message_handler.send_trade_notification(
+                "🤖 Bot System Online\n\n"
+                f"Owner ID: {self.config.OWNER_ID}\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            
+            logging.info("Bot started successfully!")
             
             # Keep running
             await self.client.run_until_disconnected()
@@ -110,13 +123,24 @@ class ForwardBot:
     async def stop(self):
         """Stop the bot"""
         try:
+            # Send shutdown notification
             if self.message_handler:
+                try:
+                    await self.message_handler.send_trade_notification(
+                        "🔌 Bot System Offline\n\n"
+                        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                except:
+                    pass
                 await self.message_handler.cleanup()
+                
             await self.application.stop()
             await self.client.disconnect()
             self.db.cleanup()
+            
         except Exception as e:
             logging.error(f"Error stopping bot: {e}")
+
     def setup_handlers(self):
         """设置消息处理器"""
         # 命令处理器
@@ -239,9 +263,6 @@ async def main():
         
         # 创建并启动机器人
         bot = ForwardBot(config)
-        
-        # 初始化所有组件
-        await bot.message_handler.initialize()
         
         # 启动机器人
         await bot.start()

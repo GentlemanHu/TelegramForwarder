@@ -72,6 +72,11 @@ class MyMessageHandler:
 
         # 用于文件清理的锁
         self._cleanup_lock = asyncio.Lock()
+        
+        # 初始化状态
+        self._initialized = False
+        self.initialized_event = asyncio.Event()
+        self.sync_complete = asyncio.Event()
 
     async def handle_channel_message(self, event):
         """处理频道消息"""
@@ -246,20 +251,21 @@ class MyMessageHandler:
             text: 消息文本
             parse_mode: 消息解析模式（可选）
         """
-        # 在UI模式下，只记录日志
-        if not self.bot:
-            logging.info(f"[UI Mode] Message to {chat_id}: {text}")
-            return
-
-        # 正常模式下发送消息
         try:
+            if not self.bot:
+                logging.info(f"[UI Mode] Message to {chat_id}: {text}")
+                return
+
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 parse_mode=parse_mode
             )
+            logging.info(f"Message sent to {chat_id}")
+            
         except Exception as e:
-            logging.error(f"Error sending message: {e}")
+            logging.error(f"Error sending message to {chat_id}: {e}")
+            raise
 
     async def send_trade_notification(self, message: str, parse_mode: str = 'HTML'):
         """Send trade notification to the bot owner
@@ -268,11 +274,19 @@ class MyMessageHandler:
             message: The notification message
             parse_mode: Message parse mode (HTML/Markdown)
         """
-        await self._send_message(
-            chat_id=self.config.OWNER_ID,
-            text=message,
-            parse_mode=parse_mode
-        )
+        if not self._initialized:
+            logging.warning("Attempting to send notification before initialization")
+            await self.initialize()
+            
+        try:
+            await self._send_message(
+                chat_id=self.config.OWNER_ID,
+                text=message,
+                parse_mode=parse_mode
+            )
+        except Exception as e:
+            logging.error(f"Failed to send trade notification: {e}")
+            raise
 
     async def handle_text_forward(self, message, from_chat, channel_id):
         """处理文本消息转发"""
@@ -386,33 +400,6 @@ class MyMessageHandler:
             return chat._type
         return 'private_channel'
 
-    async def cleanup_old_files(self):
-        """定期清理过期的临时文件"""
-        while True:
-            try:
-                current_time = datetime.now()
-                files_to_remove = []
-                
-                for file_path, timestamp in list(self.temp_files.items()):
-                    if current_time - timestamp > timedelta(hours=1):
-                        await self.cleanup_file(file_path)
-                        files_to_remove.append(file_path)
-
-                for file_path in files_to_remove:
-                    self.temp_files.pop(file_path, None)
-
-            except Exception as e:
-                logging.error(get_text('en', 'cleanup_task_error', error=str(e)))
-            
-            await asyncio.sleep(3600)  # 每小时运行一次
-
-    async def download_progress_callback(self, current, total):
-        """下载进度回调"""
-        if total:
-            percentage = current * 100 / total
-            if percentage % 20 == 0:  # 每20%记录一次
-                logging.info(get_text('en', 'download_progress', percentage=percentage))
-
     async def initialize(self) -> bool:
         """初始化所有组件"""
         if self._initialized:
@@ -421,6 +408,21 @@ class MyMessageHandler:
         try:
             # 启动清理任务
             await self.start_cleanup_task()
+            
+            # 验证配置
+            if not self.config.OWNER_ID:
+                raise ValueError("OWNER_ID not set in config")
+            
+            # 发送测试消息以验证通知功能
+            try:
+                await self._send_message(
+                    chat_id=self.config.OWNER_ID,
+                    text="🔄 Initializing notification system...",
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logging.error(f"Failed to send test message: {e}")
+                raise
             
             self._initialized = True
             self.sync_complete.set()
@@ -432,7 +434,6 @@ class MyMessageHandler:
         except Exception as e:
             logging.error(f"Error during initialization: {e}")
             return False
-
 
     async def wait_initialized(self, timeout: float = 300) -> bool:
         """等待初始化完成"""
@@ -559,3 +560,30 @@ class MyMessageHandler:
         except Exception as e:
             logging.error(f"Error formatting trade notification: {e}")
             return f"Error formatting notification for {event_type}"
+
+    async def cleanup_old_files(self):
+        """定期清理过期的临时文件"""
+        while True:
+            try:
+                current_time = datetime.now()
+                files_to_remove = []
+                
+                for file_path, timestamp in list(self.temp_files.items()):
+                    if current_time - timestamp > timedelta(hours=1):
+                        await self.cleanup_file(file_path)
+                        files_to_remove.append(file_path)
+
+                for file_path in files_to_remove:
+                    self.temp_files.pop(file_path, None)
+
+            except Exception as e:
+                logging.error(get_text('en', 'cleanup_task_error', error=str(e)))
+            
+            await asyncio.sleep(3600)  # 每小时运行一次
+
+    async def download_progress_callback(self, current, total):
+        """下载进度回调"""
+        if total:
+            percentage = current * 100 / total
+            if percentage % 20 == 0:  # 每20%记录一次
+                logging.info(get_text('en', 'download_progress', percentage=percentage))
