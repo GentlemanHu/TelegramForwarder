@@ -106,6 +106,12 @@ class AsyncBotLauncher:
                 await self._bot.initialize()
                 # 启动bot
                 await self._bot.start()
+                
+                # 设置 message_handler
+                if self._bot.message_handler:
+                    logging.info("Setting message_handler to trade_manager and position_manager")
+                    self.trade_manager.message_handler = self._bot.message_handler
+                    self.position_manager.message_handler = self._bot.message_handler
 
             self.initialized = True
             logging.info("All components initialized successfully")
@@ -234,12 +240,7 @@ class AsyncBotLauncher:
             logging.info(f"Bot initialized: {self._bot is not None}")
             logging.info(f"Bot message handler exists: {hasattr(self._bot, 'message_handler') and self._bot.message_handler is not None}")
             
-            if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:
-                #TODO - 手动重新设置message_handler到trademanager; 需要优化
-                logging.info(f"Setting message_handler to trade_manager: {self._bot.message_handler}")
-                self.trade_manager.message_handler = self._bot.message_handler
-                
-                
+            if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:  
                 account_info = {}
                 active_trades = 0
                 if self.trade_manager:
