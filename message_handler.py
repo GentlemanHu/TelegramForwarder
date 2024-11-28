@@ -546,10 +546,22 @@ class MyMessageHandler:
                 data['emoji'] = "🟢" if data['type'] == "BUY" else "🔴"
                 
             # Handle optional fields with default values
-            for key in ['stop_loss', 'take_profit', 'profit', 'profit_pct', 
-                       'current_price', 'close_price']:
-                if key not in data:
-                    data[key] = 0.0
+            default_values = {
+                'stop_loss': 0.0,
+                'take_profit': 0.0,
+                'profit': 0.0,
+                'profit_pct': 0.0,
+                'current_price': 0.0,
+                'close_price': 0.0,
+                'volume': 0.0,
+                'entry_price': 0.0,
+                'type': 'UNKNOWN'
+            }
+            
+            # Update data with default values for missing fields
+            for key, default_value in default_values.items():
+                if key not in data or data[key] is None:
+                    data[key] = default_value
                     
             # Format numbers to avoid scientific notation
             for key, value in data.items():

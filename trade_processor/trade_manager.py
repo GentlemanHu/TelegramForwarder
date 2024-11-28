@@ -395,6 +395,33 @@ class TradeManager:
             logging.error(f"Error getting price for {symbol}: {e}")
             return None
 
+    async def get_symbol_price(self, symbol: str, max_retries: int = 3) -> Optional[dict]:
+        """Get the current price for a symbol with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                if not self.connection or not self.connection.terminal_state:
+                    logging.warning(f"Connection not ready on attempt {attempt + 1}")
+                    await asyncio.sleep(1)
+                    continue
+                    
+                price = self.connection.terminal_state.price(symbol)
+                if price and price.ask is not None and price.bid is not None:
+                    return {
+                        'ask': price.ask,
+                        'bid': price.bid,
+                        'symbol': symbol
+                    }
+                    
+                logging.warning(f"Incomplete price data on attempt {attempt + 1}: ask={price.ask}, bid={price.bid}")
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                logging.error(f"Error getting price on attempt {attempt + 1}: {e}")
+                await asyncio.sleep(1)
+                
+        logging.error(f"Failed to get price for {symbol} after {max_retries} attempts")
+        return None
+
     async def get_positions(self) -> List[Dict[str, Any]]:
         """Get all positions"""
         if not self._initialized:
