@@ -458,3 +458,104 @@ class MyMessageHandler:
             for task in self.signal_tasks:
                 if task.done():
                     self.signal_tasks.remove(task)
+
+    def format_trade_notification(self, event_type: str, data: dict) -> str:
+        """Format trade notification messages based on event type
+        
+        Args:
+            event_type: Type of trade event (order_opened, order_closed, order_modified, etc)
+            data: Dictionary containing event data
+            
+        Returns:
+            Formatted notification message
+        """
+        try:
+            templates = {
+                'order_opened': (
+                    "🟢 <b>New Position Opened</b>\n"
+                    "Symbol: {symbol}\n"
+                    "Type: {type}\n" 
+                    "Volume: {volume}\n"
+                    "Entry Price: {entry_price:.5f}\n"
+                    "Stop Loss: {stop_loss:.5f}\n"
+                    "Take Profit: {take_profit:.5f}"
+                ),
+                'order_closed': (
+                    "🔴 <b>Position Closed</b>\n"
+                    "Symbol: {symbol}\n"
+                    "Type: {type}\n"
+                    "Volume: {volume}\n"
+                    "Entry Price: {entry_price:.5f}\n"
+                    "Close Price: {close_price:.5f}\n"
+                    "Profit: {profit:.2f} ({profit_pct:.2f}%)\n"
+                    "Duration: {duration}"
+                ),
+                'order_modified': (
+                    "🔄 <b>Position Modified</b>\n"
+                    "Symbol: {symbol}\n"
+                    "Type: {type}\n"
+                    "Volume: {volume}\n"
+                    "{changes}"
+                ),
+                'order_failed': (
+                    "❌ <b>Order Failed</b>\n"
+                    "Symbol: {symbol}\n"
+                    "Type: {type}\n"
+                    "Volume: {volume}\n"
+                    "Error: {error}"
+                ),
+                'sl_modified': (
+                    "🛡️ <b>Stop Loss Modified</b>\n"
+                    "Symbol: {symbol}\n"
+                    "Type: {type}\n"
+                    "Old SL: {old_sl:.5f}\n"
+                    "New SL: {new_sl:.5f}"
+                ),
+                'tp_modified': (
+                    "🎯 <b>Take Profit Modified</b>\n"
+                    "Symbol: {symbol}\n"
+                    "Type: {type}\n"
+                    "Old TP: {old_tp:.5f}\n"
+                    "New TP: {new_tp:.5f}"
+                ),
+                'system_startup': (
+                    "🚀 <b>Trading Bot Started</b>\n"
+                    "Account: {account_id}\n"
+                    "Balance: {balance:.2f}\n"
+                    "Active Trades: {active_trades}\n"
+                    "Server Time: {server_time}"
+                ),
+                'system_shutdown': (
+                    "🔌 <b>Trading Bot Stopped</b>\n"
+                    "Account: {account_id}\n"
+                    "Final Balance: {balance:.2f}\n"
+                    "Profit Today: {daily_profit:.2f}\n"
+                    "Server Time: {server_time}"
+                ),
+                'system_error': (
+                    "⚠️ <b>System Error</b>\n"
+                    "Error Type: {error_type}\n"
+                    "Message: {error_message}\n"
+                    "Time: {error_time}"
+                )
+            }
+            
+            template = templates.get(event_type)
+            if not template:
+                return f"Unknown event type: {event_type}"
+                
+            # Handle optional fields with default values
+            for key in ['stop_loss', 'take_profit', 'profit', 'profit_pct']:
+                if key not in data:
+                    data[key] = 0.0
+                    
+            # Format numbers to avoid scientific notation
+            for key, value in data.items():
+                if isinstance(value, float):
+                    data[key] = float(f"{value:.5f}")
+                    
+            return template.format(**data)
+            
+        except Exception as e:
+            logging.error(f"Error formatting trade notification: {e}")
+            return f"Error formatting notification for {event_type}"

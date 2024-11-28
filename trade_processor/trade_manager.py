@@ -186,6 +186,7 @@ class TradeManager:
         self._candle_listeners: Dict[str, List] = {}  # K线数据监听器
         self.message_handler = message_handler  # Add message handler for notifications
 
+
     async def _handle_position_update(self, position: Dict):
         """Handle position updates with profit validation"""
         try:
@@ -200,9 +201,9 @@ class TradeManager:
                         f"Type: {position.get('type')}, "
                         f"Volume: {position.get('volume')}, "
                         f"Profit: {position.get('profit'):.2f}")
-                        
-            # Send notification if position is closed
-            if position.get('state') == 'CLOSED' and self.message_handler:
+            
+            # Send notifications for position events
+            if self.message_handler:
                 notification_data = {
                     'symbol': position.get('symbol'),
                     'type': position.get('type'),
@@ -210,15 +211,49 @@ class TradeManager:
                     'entry_price': position.get('openPrice'),
                     'close_price': position.get('closePrice'),
                     'profit': position.get('profit'),
-                    'profit_pct': (position.get('profit', 0) / (float(position.get('openPrice', 1)) * float(position.get('volume', 1)))) * 100,
-                    'duration': str(datetime.fromisoformat(position.get('closeTime')) - datetime.fromisoformat(position.get('openTime'))) if position.get('closeTime') and position.get('openTime') else 'N/A'
+                    'stop_loss': position.get('stopLoss'),
+                    'take_profit': position.get('takeProfit')
                 }
                 
-                notification_msg = self.message_handler.format_trade_notification(
-                    'order_closed', 
-                    notification_data
-                )
-                await self.message_handler.send_trade_notification(notification_msg)
+                # Calculate profit percentage if position is closed
+                if position.get('state') == 'CLOSED':
+                    notification_data['profit_pct'] = (
+                        position.get('profit', 0) / 
+                        (float(position.get('openPrice', 1)) * float(position.get('volume', 1)))
+                    ) * 100
+                    notification_data['duration'] = str(
+                        datetime.fromisoformat(position.get('closeTime')) - 
+                        datetime.fromisoformat(position.get('openTime'))
+                    ) if position.get('closeTime') and position.get('openTime') else 'N/A'
+                    
+                    notification_msg = self.message_handler.format_trade_notification(
+                        'order_closed', 
+                        notification_data
+                    )
+                    await self.message_handler.send_trade_notification(notification_msg)
+                
+                # Handle SL/TP modifications
+                elif position.get('stopLossModified'):
+                    notification_data.update({
+                        'old_sl': position.get('oldStopLoss', 0),
+                        'new_sl': position.get('stopLoss', 0)
+                    })
+                    notification_msg = self.message_handler.format_trade_notification(
+                        'sl_modified',
+                        notification_data
+                    )
+                    await self.message_handler.send_trade_notification(notification_msg)
+                    
+                elif position.get('takeProfitModified'):
+                    notification_data.update({
+                        'old_tp': position.get('oldTakeProfit', 0),
+                        'new_tp': position.get('takeProfit', 0)
+                    })
+                    notification_msg = self.message_handler.format_trade_notification(
+                        'tp_modified',
+                        notification_data
+                    )
+                    await self.message_handler.send_trade_notification(notification_msg)
                         
             for listener in self._position_listeners:
                 try:
@@ -228,6 +263,18 @@ class TradeManager:
                     
         except Exception as e:
             logging.error(f"Error handling position update: {e}")
+            if self.message_handler:
+                notification_data = {
+                    'error_type': 'Position Update Error',
+                    'error_message': str(e),
+                    'error_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                notification_msg = self.message_handler.format_trade_notification(
+                    'system_error',
+                    notification_data
+                )
+                await self.message_handler.send_trade_notification(notification_msg)
+
 
     async def _handle_position_removed(self, position: Dict):
         """Handle position removal"""
@@ -252,6 +299,40 @@ class TradeManager:
                 f"State: {order.get('state')}"
             )
             
+            # Handle order notifications
+            if self.message_handler:
+                notification_data = {
+                    'symbol': order.get('symbol'),
+                    'type': order.get('type'),
+                    'volume': order.get('volume'),
+                    'entry_price': order.get('openPrice'),
+                    'stop_loss': order.get('stopLoss'),
+                    'take_profit': order.get('takeProfit'),
+                    'error': order.get('error')
+                }
+                
+                # Determine event type based on order state
+                event_type = None
+                if order.get('state') == 'FILLED':
+                    event_type = 'order_opened'
+                elif order.get('state') == 'REJECTED':
+                    event_type = 'order_failed'
+                elif order.get('state') == 'MODIFIED':
+                    event_type = 'order_modified'
+                    changes = []
+                    if order.get('stopLossModified'):
+                        changes.append(f"Stop Loss: {order.get('stopLoss'):.5f}")
+                    if order.get('takeProfitModified'):
+                        changes.append(f"Take Profit: {order.get('takeProfit'):.5f}")
+                    notification_data['changes'] = "\n".join(changes)
+                
+                if event_type:
+                    notification_msg = self.message_handler.format_trade_notification(
+                        event_type,
+                        notification_data
+                    )
+                    await self.message_handler.send_trade_notification(notification_msg)
+            
             # 通知订单监听器
             for listener in self._order_listeners:
                 try:
@@ -261,19 +342,17 @@ class TradeManager:
                     
         except Exception as e:
             logging.error(f"Error handling order update: {e}")
-
-    def add_price_listener(self, symbol: str, callback):
-        """Add price listener for specific symbol"""
-        if symbol not in self._price_listeners:
-            self._price_listeners[symbol] = []
-        self._price_listeners[symbol].append(callback)
-        
-    def remove_price_listener(self, symbol: str, callback):
-        """Remove price listener"""
-        if symbol in self._price_listeners:
-            self._price_listeners[symbol].remove(callback)
-            if not self._price_listeners[symbol]:
-                self._price_listeners.pop(symbol)
+            if self.message_handler:
+                notification_data = {
+                    'error_type': 'Order Update Error',
+                    'error_message': str(e),
+                    'error_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                notification_msg = self.message_handler.format_trade_notification(
+                    'system_error',
+                    notification_data
+                )
+                await self.message_handler.send_trade_notification(notification_msg)
 
     async def get_current_price(self, symbol: str) -> Optional[Dict]:
         """获取当前价格"""
