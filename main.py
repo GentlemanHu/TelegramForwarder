@@ -370,8 +370,33 @@ async def main():
         # 初始化配置
         config = Config()
         
+        # 创建交易管理器
+        trade_config = TradeConfig(
+            meta_api_token=config.META_API_TOKEN,
+            account_id=config.ACCOUNT_ID
+        )
+        trade_manager = TradeManager(trade_config)
+        
+        # 创建仓位管理器
+        position_manager = PositionManager(trade_manager)
+        
+        # 创建信号处理器
+        signal_processor = SignalProcessor(trade_manager, position_manager)
+        
+        # 创建AI分析器
+        ai_analyzer = AIAnalyzer(config.OPENAI_API_KEY)
+        
         # 创建并启动机器人
-        bot = ForwardBot(config)
+        bot = ForwardBot(
+            config,
+            trade_manager=trade_manager,
+            position_manager=position_manager,
+            signal_processor=signal_processor,
+            ai_analyzer=ai_analyzer
+        )
+        
+        # 设置 TradeManager 的 message_handler
+        trade_manager.message_handler = bot.message_handler
         
         # 启动机器人
         await bot.start()
