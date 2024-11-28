@@ -1298,11 +1298,11 @@ class TradeManager:
             # 异步发送持仓更新通知
             notification_data = {
                 'symbol': position.get('symbol'),
-                'type': position.get('type', 'UNKNOWN'),
-                'volume': position.get('volume', 0),
-                'entry_price': position.get('entryPrice', 0),
-                'current_price': position.get('currentPrice', 0),
-                'profit': position.get('profit', 0)
+                'type': position.get('type'),
+                'volume': position.get('volume'),
+                'entry_price': position.get('entryPrice'),
+                'current_price': position.get('currentPrice'),
+                'profit': position.get('profit')
             }
             await self._send_notification('position_updated', notification_data)
             
@@ -1318,13 +1318,13 @@ class TradeManager:
             # 异步发送订单关闭通知
             notification_data = {
                 'symbol': order.get('symbol'),
-                'type': order.get('type', 'UNKNOWN'),
-                'volume': order.get('volume', 0),
-                'entry_price': order.get('entryPrice', 0),
-                'close_price': order.get('closePrice', 0),
-                'profit': order.get('profit', 0),
-                'profit_pct': order.get('profitPercent', 0),
-                'duration': order.get('duration', 'Unknown')
+                'type': order.get('type'),
+                'volume': order.get('volume'),
+                'entry_price': order.get('entryPrice'),
+                'close_price': order.get('closePrice'),
+                'profit': order.get('profit'),
+                'profit_pct': order.get('profitPercent'),
+                'duration': order.get('duration')
             }
             await self._send_notification('order_closed', notification_data)
             
@@ -1334,19 +1334,20 @@ class TradeManager:
     async def modify_position(self, position_id, sl=None, tp=None):
         """修改持仓止损止盈"""
         try:
+            positions = await self.get_positions()
+            position = next((p for p in positions if p.get('id') == position_id), None)
+            if not position:
+                logging.error(f"Position {position_id} not found")
+                return None
+            
             result = await super().modify_position(position_id, sl, tp)
             
-            # 获取修改前的持仓信息
-            position = await self.get_position(position_id)
-            if not position:
-                return result
-                
             # 发送止损修改通知
             if sl is not None and sl != position.get('stopLoss'):
                 notification_data = {
                     'symbol': position.get('symbol'),
-                    'type': position.get('type', 'UNKNOWN'),
-                    'old_sl': position.get('stopLoss', 0),
+                    'type': position.get('type'),
+                    'old_sl': position.get('stopLoss'),
                     'new_sl': sl
                 }
                 await self._send_notification('sl_modified', notification_data)
@@ -1355,8 +1356,8 @@ class TradeManager:
             if tp is not None and tp != position.get('takeProfit'):
                 notification_data = {
                     'symbol': position.get('symbol'),
-                    'type': position.get('type', 'UNKNOWN'),
-                    'old_tp': position.get('takeProfit', 0),
+                    'type': position.get('type'),
+                    'old_tp': position.get('takeProfit'),
                     'new_tp': tp
                 }
                 await self._send_notification('tp_modified', notification_data)
@@ -1382,8 +1383,8 @@ class TradeManager:
                 logging.error("No connection available")
                 return False
                 
-            # 获取持仓信息
-            position = await self.connection.get_position(position_id)
+            positions = await self.get_positions()
+            position = next((p for p in positions if p.get('id') == position_id), None)
             if not position:
                 logging.error(f"Position {position_id} not found")
                 return False
@@ -1397,10 +1398,10 @@ class TradeManager:
             # 发送通知
             if self.message_handler:
                 notification_data = {
-                    'symbol': position.symbol,
-                    'type': position.type,
-                    'volume': position.volume,
-                    'old_sl': position.stopLoss,
+                    'symbol': position.get('symbol'),
+                    'type': position.get('type'),
+                    'volume': position.get('volume'),
+                    'old_sl': position.get('stopLoss'),
                     'new_sl': stop_loss
                 }
                 await self._send_notification('sl_modified', notification_data)
@@ -1425,8 +1426,8 @@ class TradeManager:
                 logging.error("No connection available")
                 return False
                 
-            # 获取持仓信息
-            position = await self.connection.get_position(position_id)
+            positions = await self.get_positions()
+            position = next((p for p in positions if p.get('id') == position_id), None)
             if not position:
                 logging.error(f"Position {position_id} not found")
                 return False
@@ -1440,12 +1441,12 @@ class TradeManager:
             # 发送通知
             if self.message_handler:
                 notification_data = {
-                    'symbol': position.symbol,
-                    'type': position.type,
-                    'volume': position.volume,
-                    'entry_price': position.openPrice,
-                    'close_price': position.currentPrice,
-                    'profit': position.profit
+                    'symbol': position.get('symbol'),
+                    'type': position.get('type'),
+                    'volume': position.get('volume'),
+                    'entry_price': position.get('openPrice'),
+                    'close_price': position.get('currentPrice'),
+                    'profit': position.get('profit')
                 }
                 await self._send_notification('order_closed', notification_data)
             
