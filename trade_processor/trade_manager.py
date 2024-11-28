@@ -184,8 +184,15 @@ class TradeManager:
         self.active_streams = {}  # 新增：跟踪活跃的流订阅
         self._candle_data = {}  # 存储每个symbol的最新K线数据
         self._candle_listeners: Dict[str, List] = {}  # K线数据监听器
-        self.message_handler = message_handler  # Add message handler for notifications
+        self._message_handler = message_handler  # 使用下划线前缀
 
+    @property
+    def message_handler(self):
+        return self._message_handler
+
+    @message_handler.setter
+    def message_handler(self, value):
+        self._message_handler = value
 
     async def _handle_position_update(self, position: Dict):
         """Handle position updates with profit validation"""

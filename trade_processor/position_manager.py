@@ -14,7 +14,33 @@ class PositionManager:
         self.layer_manager = SmartLayerManager(trade_manager)
         self.round_manager = RoundManager(trade_manager.connection, trade_manager)
         self._initialized = False
-        self.message_handler = trade_manager.message_handler  # Add message handler reference
+        self._message_handler = None  
+
+    @property
+    def message_handler(self):
+        return self.trade_manager.message_handler if self.trade_manager else None
+
+    @message_handler.setter
+    def message_handler(self, value):
+        self._message_handler = value
+
+    async def _send_notification(self, event_type: str, data: dict):
+        if not self.message_handler:
+            logging.info("Using trade_manager's message_handler for notification")
+            if self.trade_manager and self.trade_manager.message_handler:
+                await self.trade_manager._send_notification(event_type, data)
+            else:
+                logging.error("No message handler available")
+            return
+
+        try:
+            notification_msg = self.message_handler.format_trade_notification(
+                event_type,
+                data
+            )
+            await self.message_handler.send_trade_notification(notification_msg)
+        except Exception as e:
+            logging.error(f"Error sending notification: {e}", exc_info=True)
 
     async def initialize(self):
         """Initialize position manager and all sub-components"""
@@ -322,7 +348,7 @@ class PositionManager:
                         'details': f"Entry: {entry_price}, Volume: {volume}, Type: {signal['entry_type']}"
                     }
                     error_msg = self.message_handler.format_trade_notification('error', error_data)
-                    await self.message_handler.send_trade_notification(error_msg)
+                    await self._send_notification('error', error_data)
                 return None
 
             # Send order opened notification
@@ -336,7 +362,7 @@ class PositionManager:
                     'take_profit': signal['take_profits'][0] if signal['take_profits'] else None
                 }
                 order_msg = self.message_handler.format_trade_notification('order_opened', order_data)
-                await self.message_handler.send_trade_notification(order_msg)
+                await self._send_notification('order_opened', order_data)
 
             # Create Position object
             position = Position(
@@ -377,8 +403,7 @@ class PositionManager:
                     'symbol': signal.get('symbol', 'Unknown'),
                     'details': 'Failed to create position'
                 }
-                error_msg = self.message_handler.format_trade_notification('error', error_data)
-                await self.message_handler.send_trade_notification(error_msg)
+                await self._send_notification('error', error_data)
             return None
 
 
