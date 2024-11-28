@@ -473,68 +473,62 @@ class MyMessageHandler:
         try:
             templates = {
                 'order_opened': (
-                    "🟢 <b>New Position Opened</b>\n"
-                    "Symbol: {symbol}\n"
-                    "Type: {type}\n" 
-                    "Volume: {volume}\n"
-                    "Entry Price: {entry_price:.5f}\n"
-                    "Stop Loss: {stop_loss:.5f}\n"
-                    "Take Profit: {take_profit:.5f}"
+                    "{emoji} <b>New {type} Order</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
+                    "Entry Price: <code>{entry_price:.5f}</code>\n"
+                    "Stop Loss: <code>{stop_loss:.5f}</code>\n"
+                    "Take Profit: <code>{take_profit:.5f}</code>"
                 ),
                 'order_closed': (
-                    "🔴 <b>Position Closed</b>\n"
-                    "Symbol: {symbol}\n"
-                    "Type: {type}\n"
-                    "Volume: {volume}\n"
-                    "Entry Price: {entry_price:.5f}\n"
-                    "Close Price: {close_price:.5f}\n"
-                    "Profit: {profit:.2f} ({profit_pct:.2f}%)\n"
+                    "🔴 <b>Position Closed</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
+                    "Entry Price: <code>{entry_price:.5f}</code>\n"
+                    "Close Price: <code>{close_price:.5f}</code>\n"
+                    "Profit: <code>{profit:.2f}</code> ({profit_pct:.2f}%)\n"
                     "Duration: {duration}"
                 ),
                 'order_modified': (
-                    "🔄 <b>Position Modified</b>\n"
-                    "Symbol: {symbol}\n"
-                    "Type: {type}\n"
-                    "Volume: {volume}\n"
+                    "🔄 <b>Position Modified</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
                     "{changes}"
                 ),
                 'order_failed': (
-                    "❌ <b>Order Failed</b>\n"
-                    "Symbol: {symbol}\n"
-                    "Type: {type}\n"
-                    "Volume: {volume}\n"
+                    "❌ <b>Order Failed</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
                     "Error: {error}"
                 ),
                 'sl_modified': (
-                    "🛡️ <b>Stop Loss Modified</b>\n"
-                    "Symbol: {symbol}\n"
-                    "Type: {type}\n"
-                    "Old SL: {old_sl:.5f}\n"
-                    "New SL: {new_sl:.5f}"
+                    "🛡️ <b>Stop Loss Modified</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Old SL: <code>{old_sl:.5f}</code>\n"
+                    "New SL: <code>{new_sl:.5f}</code>"
                 ),
                 'tp_modified': (
-                    "🎯 <b>Take Profit Modified</b>\n"
-                    "Symbol: {symbol}\n"
-                    "Type: {type}\n"
-                    "Old TP: {old_tp:.5f}\n"
-                    "New TP: {new_tp:.5f}"
+                    "🎯 <b>Take Profit Modified</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Old TP: <code>{old_tp:.5f}</code>\n"
+                    "New TP: <code>{new_tp:.5f}</code>"
                 ),
-                'system_startup': (
-                    "🚀 <b>Trading Bot Started</b>\n"
-                    "Account: {account_id}\n"
-                    "Balance: {balance:.2f}\n"
-                    "Active Trades: {active_trades}\n"
-                    "Server Time: {server_time}"
-                ),
-                'system_shutdown': (
-                    "🔌 <b>Trading Bot Stopped</b>\n"
-                    "Account: {account_id}\n"
-                    "Final Balance: {balance:.2f}\n"
-                    "Profit Today: {daily_profit:.2f}\n"
-                    "Server Time: {server_time}"
+                'position_updated': (
+                    "📊 <b>Position Update</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
+                    "Entry Price: <code>{entry_price:.5f}</code>\n"
+                    "Current Price: <code>{current_price:.5f}</code>\n"
+                    "Profit: <code>{profit:.2f}</code>"
                 ),
                 'system_error': (
-                    "⚠️ <b>System Error</b>\n"
+                    "⚠️ <b>System Error</b>\n\n"
                     "Error Type: {error_type}\n"
                     "Message: {error_message}\n"
                     "Time: {error_time}"
@@ -545,8 +539,13 @@ class MyMessageHandler:
             if not template:
                 return f"Unknown event type: {event_type}"
                 
+            # Add emoji based on order type for new orders
+            if event_type == 'order_opened':
+                data['emoji'] = "🟢" if data['type'] == "BUY" else "🔴"
+                
             # Handle optional fields with default values
-            for key in ['stop_loss', 'take_profit', 'profit', 'profit_pct']:
+            for key in ['stop_loss', 'take_profit', 'profit', 'profit_pct', 
+                       'current_price', 'close_price']:
                 if key not in data:
                     data[key] = 0.0
                     

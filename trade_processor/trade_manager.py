@@ -1171,93 +1171,139 @@ class TradeManager:
         except Exception as e:
             logging.error(f"Error handling candle update: {e}")
 
-    async def _notify_trade_execution(self, order_result, order_type="market"):
-        """发送交易执行通知"""
+    async def _send_notification(self, event_type: str, data: dict):
+        """异步发送通知,不影响主流程"""
         if not self.message_handler:
             return
             
         try:
-            notification_data = {
-                'symbol': order_result.symbol,
-                'type': order_result.type,
-                'volume': order_result.volume,
-                'entry_price': order_result.openPrice,
-                'stop_loss': order_result.stopLoss,
-                'take_profit': order_result.takeProfit
-            }
-            
-            event_type = 'order_opened' if order_type == "market" else 'order_pending'
             notification_msg = self.message_handler.format_trade_notification(
                 event_type,
-                notification_data
+                data
             )
-            await self.message_handler.send_trade_notification(notification_msg)
-            
-        except Exception as e:
-            logging.error(f"Error sending trade execution notification: {e}")
-            
-    async def _notify_position_update(self, position):
-        """发送持仓更新通知"""
-        if not self.message_handler:
-            return
-            
-        try:
-            notification_data = {
-                'symbol': position.symbol,
-                'type': position.type,
-                'volume': position.volume,
-                'entry_price': position.openPrice,
-                'current_price': position.currentPrice,
-                'profit': position.profit,
-                'stop_loss': position.stopLoss,
-                'take_profit': position.takeProfit
-            }
-            
-            if hasattr(position, 'state') and position.state == 'CLOSED':
-                notification_data.update({
-                    'close_price': position.closePrice,
-                    'profit_pct': (position.profit / (position.openPrice * position.volume)) * 100,
-                    'duration': str(
-                        datetime.fromisoformat(position.closeTime) - 
-                        datetime.fromisoformat(position.openTime)
-                    ) if position.closeTime and position.openTime else 'N/A'
-                })
-                event_type = 'order_closed'
-            else:
-                event_type = 'position_updated'
-                
-            notification_msg = self.message_handler.format_trade_notification(
-                event_type,
-                notification_data
+            asyncio.create_task(
+                self.message_handler.send_trade_notification(notification_msg)
             )
-            await self.message_handler.send_trade_notification(notification_msg)
-            
         except Exception as e:
-            logging.error(f"Error sending position update notification: {e}")
+            logging.error(f"Error sending notification: {e}")
 
     async def place_market_order(self, symbol, direction, volume, sl=None, tp=None):
         """下市价单"""
         try:
-            # 原有的下单逻辑
-            order_result = await super().place_market_order(symbol, direction, volume, sl, tp)
+            # 创建订单参数
+            params = self._create_market_order_params(
+                symbol=symbol,
+                volume=volume,
+                direction=direction,
+                stop_loss=sl,
+                take_profit=tp
+            )
             
-            # 发送交易通知
-            await self._notify_trade_execution(order_result)
+            # 下单
+            result = await self.connection.create_market_buy_order(**params) if direction == "buy" \
+                else await self.connection.create_market_sell_order(**params)
             
-            return order_result
+            logging.info(f"Order placed successfully: {result}")
+            
+            # 异步发送通知
+            notification_data = {
+                'symbol': symbol,
+                'type': direction.upper(),
+                'volume': volume,
+                'entry_price': result.get('openPrice', 0),
+                'stop_loss': sl,
+                'take_profit': tp
+            }
+            await self._send_notification('order_opened', notification_data)
+            
+            return result
             
         except Exception as e:
             logging.error(f"Error placing market order: {e}")
+            # 异步发送错误通知
+            notification_data = {
+                'symbol': symbol,
+                'type': direction.upper(),
+                'volume': volume,
+                'error': str(e)
+            }
+            await self._send_notification('order_failed', notification_data)
             raise
 
     async def on_position_update(self, position):
         """持仓更新回调"""
         try:
-            # 原有的持仓更新逻辑
+            # 更新持仓信息
             await super().on_position_update(position)
             
-            # 发送持仓更新通知
-            await self._notify_position_update(position)
+            # 异步发送持仓更新通知
+            notification_data = {
+                'symbol': position.get('symbol'),
+                'type': position.get('type', 'UNKNOWN'),
+                'volume': position.get('volume', 0),
+                'entry_price': position.get('entryPrice', 0),
+                'current_price': position.get('currentPrice', 0),
+                'profit': position.get('profit', 0)
+            }
+            await self._send_notification('position_updated', notification_data)
             
         except Exception as e:
             logging.error(f"Error handling position update: {e}")
+
+    async def on_order_closed(self, order):
+        """订单关闭回调"""
+        try:
+            # 处理订单关闭
+            await super().on_order_closed(order)
+            
+            # 异步发送订单关闭通知
+            notification_data = {
+                'symbol': order.get('symbol'),
+                'type': order.get('type', 'UNKNOWN'),
+                'volume': order.get('volume', 0),
+                'entry_price': order.get('entryPrice', 0),
+                'close_price': order.get('closePrice', 0),
+                'profit': order.get('profit', 0),
+                'profit_pct': order.get('profitPercent', 0),
+                'duration': order.get('duration', 'Unknown')
+            }
+            await self._send_notification('order_closed', notification_data)
+            
+        except Exception as e:
+            logging.error(f"Error handling order close: {e}")
+
+    async def modify_position(self, position_id, sl=None, tp=None):
+        """修改持仓止损止盈"""
+        try:
+            result = await super().modify_position(position_id, sl, tp)
+            
+            # 获取修改前的持仓信息
+            position = await self.get_position(position_id)
+            if not position:
+                return result
+                
+            # 发送止损修改通知
+            if sl is not None and sl != position.get('stopLoss'):
+                notification_data = {
+                    'symbol': position.get('symbol'),
+                    'type': position.get('type', 'UNKNOWN'),
+                    'old_sl': position.get('stopLoss', 0),
+                    'new_sl': sl
+                }
+                await self._send_notification('sl_modified', notification_data)
+                
+            # 发送止盈修改通知
+            if tp is not None and tp != position.get('takeProfit'):
+                notification_data = {
+                    'symbol': position.get('symbol'),
+                    'type': position.get('type', 'UNKNOWN'),
+                    'old_tp': position.get('takeProfit', 0),
+                    'new_tp': tp
+                }
+                await self._send_notification('tp_modified', notification_data)
+                
+            return result
+            
+        except Exception as e:
+            logging.error(f"Error modifying position: {e}")
+            raise

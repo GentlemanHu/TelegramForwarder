@@ -201,19 +201,19 @@ class ForwardBot:
             # 格式化账户信息
             account_str = (
                 "💰 Account Information:\n"
-                f"Balance: <code>${account.balance:.2f}</code>\n"
-                f"Equity: <code>${account.equity:.2f}</code>\n"
-                f"Margin Level: <code>{account.marginLevel:.2f}%</code>\n"
-                f"Free Margin: <code>${account.freeMargin:.2f}</code>"
+                f"Balance: <code>${account.get('balance', 0):.2f}</code>\n"
+                f"Equity: <code>${account.get('equity', 0):.2f}</code>\n"
+                f"Margin Level: <code>{account.get('marginLevel', 0):.2f}%</code>\n"
+                f"Free Margin: <code>${account.get('freeMargin', 0):.2f}</code>"
             )
             
             # 格式化持仓信息
             positions_str = "No open positions"
             if positions:
                 positions_str = "📊 Current Positions:\n" + "\n".join([
-                    f"• {p.symbol}: {p.type} "
-                    f"{p.volume} lots @ {p.openPrice:.5f} "
-                    f"(P/L: ${p.profit:.2f})"
+                    f"• {p.get('symbol', 'Unknown')}: {p.get('type', 'Unknown')} "
+                    f"{p.get('volume', 0)} lots @ {p.get('openPrice', 0):.5f} "
+                    f"(P/L: ${p.get('profit', 0):.2f})"
                     for p in positions
                 ])
             
