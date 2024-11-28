@@ -43,7 +43,11 @@ class SimulatedChat:
 class AsyncBotLauncher:
     def __init__(self):
         self.config = Config()
-        self.trade_config = TradeConfig(meta_api_token=self.config.META_API_TOKEN,account_id=self.config.ACCOUNT_ID,openai_api_key=self.config.OPENAI_API_KEY)
+        self.trade_config = TradeConfig(
+            meta_api_token=self.config.META_API_TOKEN,
+            account_id=self.config.ACCOUNT_ID,
+            openai_api_key=self.config.OPENAI_API_KEY
+        )
         self.initialized = False
         self.trade_manager = None
         self.position_manager = None
@@ -51,6 +55,7 @@ class AsyncBotLauncher:
         self.ai_analyzer = None
         self._bot = None
         self.start_time = None
+        self.run_mode = 'telegram'  # 默认为telegram模式
 
     async def get_trade_manager(self) -> TradeManager:
         """获取或创建 TradeManager 单例"""
@@ -66,25 +71,44 @@ class AsyncBotLauncher:
             return True
 
         try:
-            # Initialize trading system components
+            # 1. 初始化交易管理器
             self.trade_manager = await self.get_trade_manager()
+            if not self.trade_manager:
+                raise Exception("Failed to initialize trade manager")
             
+            # 2. 初始化AI分析器
             if not self.ai_analyzer:
                 self.ai_analyzer = AIAnalyzer(self.trade_config)
             
+            # 3. 初始化持仓管理器
             if not self.position_manager:
                 self.position_manager = PositionManager(self.trade_manager)
                 await self.position_manager.initialize()
             
+            # 4. 初始化信号处理器
             if not self.signal_processor:
                 self.signal_processor = SignalProcessor(
                     self.trade_config,
                     self.ai_analyzer,
                     self.position_manager
                 )
+            
+            # 5. 根据模式初始化bot
+            if self.run_mode == 'telegram' and not self._bot:
+                self._bot = ForwardBot(
+                    config=self.config,
+                    trade_manager=self.trade_manager,
+                    position_manager=self.position_manager,
+                    signal_processor=self.signal_processor,
+                    ai_analyzer=self.ai_analyzer
+                )
+                # 初始化bot
+                await self._bot.initialize()
+                # 启动bot
+                await self._bot.start()
 
             self.initialized = True
-            logging.info("Trading components initialized successfully")
+            logging.info("All components initialized successfully")
             return True
 
         except Exception as e:
@@ -131,25 +155,13 @@ class AsyncBotLauncher:
 
     async def run_telegram_mode(self):
         """Run in Telegram mode"""
-        if not await self.initialize_components():
-            logging.error("Failed to initialize components for Telegram mode")
-            return
-
+        self.run_mode = 'telegram'
+        # 等待直到被中断
         try:
-            if not self._bot:
-                # 创建 bot 实例时传入已初始化的组件
-                self._bot = ForwardBot(
-                    config=self.config,
-                    trade_manager=self.trade_manager,
-                    position_manager=self.position_manager,
-                    signal_processor=self.signal_processor,
-                    ai_analyzer=self.ai_analyzer
-                )
-            
-            await self._bot.start()
-            
-        except Exception as e:
-            logging.error(f"Error in Telegram mode: {e}")
+            while True:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
 
     async def run_ui_mode(self):
         """Run in UI mode with async web server"""
@@ -214,10 +226,11 @@ class AsyncBotLauncher:
             self.start_time = datetime.now()
             
             # Initialize components
-            await self.initialize_components()
+            if not await self.initialize_components():
+                raise Exception("Failed to initialize components")
 
-            # Send startup notification
-            if self._bot and hasattr(self._bot, 'message_handler'):
+            # 只在telegram模式下发送启动通知
+            if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:
                 account_info = {}
                 active_trades = 0
                 if self.trade_manager:
@@ -225,26 +238,19 @@ class AsyncBotLauncher:
                     positions = await self.trade_manager.get_positions()
                     active_trades = len(positions) if positions else 0
                 
-                notification_data = {
-                    'account_id': self.config.ACCOUNT_ID,
-                    'balance': account_info.get('balance', 0) if account_info else 0,
-                    'active_trades': active_trades,
-                    'server_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-                
                 await self._bot.message_handler.send_trade_notification(
                     "🚀 Trading Bot Started\n\n"
-                    f"💼 Account: {notification_data['account_id']}\n"
-                    f"💰 Balance: ${notification_data['balance']:.2f}\n"
-                    f"📊 Active Trades: {notification_data['active_trades']}\n"
-                    f"⏰ Time: {notification_data['server_time']}"
+                    f"💼 Account: {self.config.ACCOUNT_ID}\n"
+                    f"💰 Balance: ${account_info.get('balance', 0) if account_info else 0:.2f}\n"
+                    f"📊 Active Trades: {active_trades}\n"
+                    f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
             logging.info("Bot started successfully")
 
         except Exception as e:
             logging.error(f"Error starting bot: {e}")
-            if self._bot and hasattr(self._bot, 'message_handler'):
+            if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:
                 await self._bot.message_handler.send_trade_notification(
                     f"⚠️ System Error\n\n"
                     f"Type: Startup Error\n"
@@ -256,8 +262,8 @@ class AsyncBotLauncher:
     async def stop(self):
         """Stop the bot"""
         try:
-            # Send shutdown notification
-            if self._bot and hasattr(self._bot, 'message_handler'):
+            # 只在telegram模式下发送关闭通知
+            if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:
                 account_info = {}
                 daily_profit = 0
                 if self.trade_manager:
@@ -270,23 +276,24 @@ class AsyncBotLauncher:
                 await self._bot.message_handler.send_trade_notification(
                     "🔄 Trading Bot Stopped\n\n"
                     f"💼 Account: {self.config.ACCOUNT_ID}\n"
-                    f"💰 Final Balance: ${account_info.get('balance', 0):.2f}\n"
+                    f"💰 Final Balance: ${account_info.get('balance', 0) if account_info else 0:.2f}\n"
                     f"📈 Daily P/L: ${daily_profit:.2f}\n"
                     f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
-            # Cleanup components
+            # Cleanup components in reverse order
+            if self._bot:
+                await self._bot.stop()
             if self.position_manager:
                 await self.position_manager.cleanup()
             if self.trade_manager:
                 await self.trade_manager.cleanup()
-            if self._bot:
-                await self._bot.stop()
+            
             logging.info("Bot stopped successfully")
 
         except Exception as e:
             logging.error(f"Error stopping bot: {e}")
-            if self._bot and hasattr(self._bot, 'message_handler'):
+            if self.run_mode == 'telegram' and self._bot and self._bot.message_handler:
                 await self._bot.message_handler.send_trade_notification(
                     f"⚠️ System Error\n\n"
                     f"Type: Shutdown Error\n"
