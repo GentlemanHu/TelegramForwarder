@@ -495,6 +495,8 @@ class RoundManager:
             positions = terminal_state.positions
             orders = terminal_state.orders
             
+            logging.info(f"Found {len(positions)} positions and {len(orders)} orders in terminal state")
+            
             # 按照round_id分组
             position_groups = {}
             order_groups = {}
@@ -506,7 +508,18 @@ class RoundManager:
                     if round_id not in position_groups:
                         position_groups[round_id] = []
                     position_groups[round_id].append(pos)
-        
+                    logging.info(f"Position grouped to round {round_id}:"
+                               f"\n  ID: {pos.get('id')}"
+                               f"\n  Symbol: {pos.get('symbol')}"
+                               f"\n  Type: {pos.get('type')}"
+                               f"\n  Volume: {pos.get('volume')}"
+                               f"\n  Comment: {pos.get('comment')}")
+                else:
+                    logging.warning(f"Position has no round_id:"
+                                  f"\n  ID: {pos.get('id')}"
+                                  f"\n  Symbol: {pos.get('symbol')}"
+                                  f"\n  Comment: {pos.get('comment')}")
+            
             # 处理限价单
             for order in orders:
                 round_id = self.extract_round_id(order.get('comment', ''))
@@ -514,9 +527,21 @@ class RoundManager:
                     if round_id not in order_groups:
                         order_groups[round_id] = []
                     order_groups[round_id].append(order)
+                    logging.info(f"Order grouped to round {round_id}:"
+                               f"\n  ID: {order.get('id')}"
+                               f"\n  Symbol: {order.get('symbol')}"
+                               f"\n  Type: {order.get('type')}"
+                               f"\n  Volume: {order.get('volume')}"
+                               f"\n  Comment: {order.get('comment')}")
+                else:
+                    logging.warning(f"Order has no round_id:"
+                                  f"\n  ID: {order.get('id')}"
+                                  f"\n  Symbol: {order.get('symbol')}"
+                                  f"\n  Comment: {order.get('comment')}")
 
             # 合并所有round_id
             all_round_ids = set(list(position_groups.keys()) + list(order_groups.keys()))
+            logging.info(f"Found {len(all_round_ids)} unique round IDs: {all_round_ids}")
 
             # 重建rounds
             restored_count = 0
@@ -591,32 +616,29 @@ class RoundManager:
                 self.rounds[round_id] = trade_round
                 restored_count += 1
                 
+                logging.info(f"Restored round {round_id}:"
+                            f"\n  Symbol: {symbol}"
+                            f"\n  Direction: {direction}"
+                            f"\n  Positions: {len(positions_list)}"
+                            f"\n  Orders: {len(orders_list)}"
+                            f"\n  TP Levels: {len(trade_round.tp_levels)}")
+                
                 # 设置价格监控
                 await self._setup_price_monitoring(symbol)
 
             self._initialized = True
-            logging.info(f"RoundManager initialized successfully, restored {restored_count} rounds")
+            logging.info(f"RoundManager initialization complete:"
+                        f"\n  Total positions: {len(positions)}"
+                        f"\n  Total orders: {len(orders)}"
+                        f"\n  Position groups: {len(position_groups)}"
+                        f"\n  Order groups: {len(order_groups)}"
+                        f"\n  Unique round IDs: {len(all_round_ids)}"
+                        f"\n  Restored rounds: {restored_count}")
             return True
 
         except Exception as e:
             logging.error(f"Error initializing RoundManager: {e}")
             return False
-
-    async def _setup_listeners(self):
-        """设置事件监听器"""
-        try:
-            if not self.connection:
-                return
-            
-            # 使用正确的监听器添加方法
-            self.connection.add_synchronization_listener(self)
-            
-            # 设置价格监听
-            for symbol in self._subscribed_symbols:
-                await self._setup_price_monitoring(symbol)
-
-        except Exception as e:
-            logging.error(f"Error setting up listeners: {e}")
 
     async def _update_positions_sl(self, trade_round: TradeRound, new_stop_loss: float):
         """更新所有仓位的止损"""
@@ -834,10 +856,7 @@ class RoundManager:
                 tp_levels=[TPLevel(price=tp) for tp in signal.get('take_profits', [])],
                 stop_loss=signal.get('stop_loss'),
                 status=RoundStatus.PENDING,
-                metadata={
-                    'signal': signal,
-                    'creation_time': datetime.now().isoformat()
-                }
+                metadata={'signal': signal}
             )
 
             async with self.lock:
