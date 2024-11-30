@@ -47,28 +47,40 @@ class PositionManager:
         try:
             if self._initialized:
                 return True
-                
+            
+            logging.info("Starting position manager initialization...")
+            
             # Initialize trade manager first
             if not self.trade_manager._initialized:
+                logging.info("Initializing trade manager...")
                 success = await self.trade_manager.initialize()
                 if not success:
+                    logging.error("Failed to initialize trade manager")
                     raise Exception("Failed to initialize trade manager")
+                logging.info("Trade manager initialized successfully")
 
             # Wait for trade manager to be fully ready
             if not self.trade_manager.sync_complete.is_set():
+                logging.info("Waiting for trade manager synchronization...")
                 success = await self.trade_manager.wait_synchronized()
                 if not success:
+                    logging.error("Trade manager synchronization failed")
                     raise Exception("Trade manager synchronization failed")
+                logging.info("Trade manager synchronized successfully")
 
             # Initialize round manager
             if not self.round_manager._initialized:
+                logging.info("Initializing round manager...")
                 success = await self.round_manager.initialize()
                 if not success:
+                    logging.error("Failed to initialize round manager")
                     raise Exception("Failed to initialize round manager")
+                logging.info("Round manager initialized successfully")
 
             self._initialized = True
+            logging.info("Position manager initialization completed successfully")
             return True
-            
+        
         except Exception as e:
             logging.error(f"Error initializing position manager: {e}")
             return False

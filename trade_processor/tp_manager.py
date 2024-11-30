@@ -183,6 +183,13 @@ class DynamicTPManager:
         try:
             actions = []
             modified_count = 0
+            
+            # 获取round信息
+            trade_round = self.round_manager.rounds.get(round_id)
+            if not trade_round:
+                logging.error(f"Round {round_id} not found")
+                return []
+                
             for position in positions:
                 entry_price = float(position['openPrice'])
                 current_price = float(position.get('currentPrice', entry_price))

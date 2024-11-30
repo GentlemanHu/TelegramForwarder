@@ -418,45 +418,52 @@ class ForwardBot:
             if not self.trade_manager:
                 await update.message.reply_text(get_text(lang, 'trade_manager_error'))
                 return
-                
+            
             positions = await self.trade_manager.get_positions()
             if not positions:
                 await update.message.reply_text(get_text(lang, 'no_positions'))
                 return
-                
+            
             # 筛选盈利仓位并设置止损
             modified_count = 0
             for pos in positions:
-                profit = float(pos.get('profit', 0))
-                profit_pct = float(pos.get('profitPercent', 0))
-                
-                # 检查利润和利润百分比
-                if profit > 0 and profit_pct > 0:
-                    try:
-                        # 获取当前价格
-                        terminal_state = self.trade_manager.connection.terminal_state
-                        current_price = None
-                        if terminal_state:
-                            price_info = terminal_state.price(pos['symbol'])
-                            if price_info:
-                                current_price = price_info['ask'] if pos['type'] == 'buy' else price_info['bid']
+                try:
+                    # 获取当前价格
+                    terminal_state = self.trade_manager.connection.terminal_state
+                    if not terminal_state:
+                        logging.error("Terminal state not available")
+                        continue
                         
-                        # 如果当前价格在入场价之上（多仓）或之下（空仓），才设置止损
-                        entry_price = float(pos['openPrice'])
-                        if current_price:
-                            is_profitable = (pos['type'] == 'buy' and current_price > entry_price) or \
-                                         (pos['type'] == 'sell' and current_price < entry_price)
-                            if is_profitable:
-                                await self.trade_manager.modify_position_sl(
-                                    pos['id'],
-                                    entry_price  # 设置止损到入场价
-                                )
-                                modified_count += 1
-                                logging.info(f"Modified position {pos['id']} to breakeven. "
-                                           f"Type: {pos['type']}, Entry: {entry_price}, "
-                                           f"Current: {current_price}, Profit: {profit}")
-                    except Exception as e:
-                        logging.error(f"Error modifying position {pos['id']}: {e}")
+                    price_info = terminal_state.price(pos['symbol'])
+                    if not price_info:
+                        logging.error(f"Price info not available for {pos['symbol']}")
+                        continue
+                        
+                    current_price = price_info['ask'] if pos['type'] == 'buy' else price_info['bid']
+                    entry_price = float(pos['openPrice'])
+                    is_long = pos['type'] == 'buy'
+                    
+                    # 检查是否盈利
+                    is_profitable = (is_long and current_price > entry_price) or (not is_long and current_price < entry_price)
+                    
+                    if is_profitable:
+                        # 设置止损到入场价
+                        success = await self.trade_manager.modify_position_sl(
+                            pos['id'],
+                            entry_price
+                        )
+                        if success:
+                            modified_count += 1
+                            logging.info(f"Set breakeven for position {pos['id']}: {pos['symbol']} {pos['type']} "
+                                       f"Entry: {entry_price}, Current: {current_price}")
+                        else:
+                            logging.error(f"Failed to modify position {pos['id']}")
+                    else:
+                        logging.info(f"Position {pos['id']} not profitable: {pos['symbol']} {pos['type']} "
+                                   f"Entry: {entry_price}, Current: {current_price}")
+                        
+                except Exception as e:
+                    logging.error(f"Error processing position {pos['id']}: {e}")
             
             await update.message.reply_text(
                 get_text(lang, 'breakeven_success', count=modified_count)
