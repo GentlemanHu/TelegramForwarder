@@ -179,23 +179,28 @@ class DynamicTPManager:
         positions: List[Dict],
         hit_tp: TPLevel
     ) -> List[Dict]:
-        """将剩余仓位移动到保本点"""
+        """将盈利的仓位移动到保本点"""
         try:
             actions = []
+            modified_count = 0
             for position in positions:
                 entry_price = float(position['openPrice'])
+                current_price = float(position.get('currentPrice', entry_price))
                 
-                # 计算保本点
-                price_range = abs(hit_tp.price - entry_price)
-                buffer_ratio = 0.1  # 10%的缓冲区
+                # 检查是否盈利
+                is_long = position['type'] == 'buy'
+                is_profitable = (current_price > entry_price) if is_long else (current_price < entry_price)
                 
-                # 根据盈利情况调整缓冲区
-                if price_range > 0:
-                    # 盈利越大，缓冲区越大
-                    buffer_ratio = min(0.2, buffer_ratio * (1 + price_range / entry_price))
+                if not is_profitable:
+                    continue
+                    
+                # 计算保本点 - 为了安全起见，在入场价格基础上留一点点余地
+                safety_margin = abs(entry_price) * 0.001  # 0.1%的安全边际
+                breakeven_price = entry_price + (safety_margin if is_long else -safety_margin)
                 
-                buffer = price_range * buffer_ratio
-                breakeven_price = entry_price + (buffer if position['type'] == 'buy' else -buffer)
+                # 确保breakeven价格对于多头来说在当前价格之下，对于空头来说在当前价格之上
+                if (is_long and breakeven_price >= current_price) or (not is_long and breakeven_price <= current_price):
+                    breakeven_price = current_price + (-safety_margin if is_long else safety_margin)
                 
                 actions.append({
                     'action': 'modify_position',
@@ -203,7 +208,9 @@ class DynamicTPManager:
                     'stop_loss': breakeven_price,
                     'reason': 'breakeven_after_tp'
                 })
+                modified_count += 1
                 
+            logging.info(f"Modified {modified_count} profitable positions to breakeven")
             return actions
             
         except Exception as e:
