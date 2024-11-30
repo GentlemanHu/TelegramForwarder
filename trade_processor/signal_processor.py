@@ -250,35 +250,48 @@ class SignalProcessor:
         """处理入场信号"""
         try:
             symbol = signal['symbol']
-            direction = signal['action']  # 获取交易方向
+            direction = signal['action']
             terminal_state = self.position_manager.trade_manager.connection.terminal_state
             
             # 尝试合并最近5分钟内的同方向rounds
             existing_round_id = await self.position_manager.round_manager.merge_rounds(
                 symbol=symbol,
-                direction=direction,  # 传入交易方向
-                time_window=300
+                direction=direction,
+                time_window=300  # 5分钟窗口
             )
             
             if existing_round_id:
-                # 更新现有round的配置
-                config_updates = {
-                    'stop_loss': signal.get('stop_loss'),
-                    'take_profits': signal.get('take_profits', [])
-                }
+                # 更新现有round中所有position的配置
+                existing_round = self.position_manager.round_manager.rounds[existing_round_id]
                 
-                # 如果有trailing stop设置
-                if signal.get('trailing_stop'):
-                    config_updates['trailing_stop'] = signal['trailing_stop']
+                # 更新止损止盈
+                updates = {}
+                if 'stop_loss' in signal:
+                    updates['stop_loss'] = signal['stop_loss']
+                if 'take_profits' in signal:
+                    updates['take_profits'] = signal['take_profits']
+                
+                # 更新所有相关position
+                for pos_id, position in existing_round.positions.items():
+                    await self.position_manager.trade_manager.modify_position(
+                        position_id=pos_id,
+                        stop_loss=updates.get('stop_loss'),
+                        take_profit=updates.get('take_profits', [None])[0] if updates.get('take_profits') else None
+                    )
+                
+                # 如果有新的订单要开
+                if signal.get('layers', {}).get('enabled'):
+                    signal['round_id'] = existing_round_id  # 使用现有round_id
+                    await self.position_manager.create_layered_positions(signal)
+                elif signal.get('volume'):
+                    signal['round_id'] = existing_round_id  # 使用现有round_id
+                    await self.position_manager.create_single_position(signal)
                     
-                await self.position_manager.update_positions_config(
-                    existing_round_id, 
-                    config_updates
-                )
-                logging.info(f"Updated existing {direction} round: {existing_round_id}")
+                logging.info(f"Updated existing round {existing_round_id} and added new positions")
                 return existing_round_id
+                
             else:
-                # 生成新的round标识
+                # 创建新的round
                 round_id = self.position_manager.round_manager.generate_round_suffix()
                 signal['round_id'] = round_id
                 
@@ -286,24 +299,16 @@ class SignalProcessor:
                     success = await self.position_manager.create_layered_positions(signal)
                 else:
                     success = await self.position_manager.create_single_position(signal)
-
+                    
                 if success:
-                    self.active_rounds[round_id] = {
-                        'round_id': round_id,
-                        'signal': signal,
-                        'status': 'active',
-                        'timestamp': datetime.now()
-                    }
-                    logging.info(f"Created new {direction} round: {round_id}")
+                    logging.info(f"Created new round {round_id}")
                     return round_id
-                else:
-                    logging.error("Failed to create positions")
-                    return None
-
+                
+                logging.error("Failed to create new positions")
+                return None
+                
         except Exception as e:
             logging.error(f"Error handling entry signal: {e}")
-            if hasattr(e, '__dict__'):
-                logging.error(f"Error details: {e.__dict__}")
             return None
 
 

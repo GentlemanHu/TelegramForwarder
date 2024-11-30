@@ -1452,14 +1452,21 @@ class RoundManager:
             logging.error(f"Error handling entry signal: {e}")
 
     def generate_round_suffix(self) -> str:
-        """生成round标识，格式为 R + 4位字母数字组合
-        例如：RA2B3, RX5Y9 等
+        """生成round标识，格式为 R + 2位数字 + 2位字母
+        例如：R45XY
+        
+        使用2位数字+2位字母的组合来确保足够的随机性和可读性
+        数字范围：00-99
+        字母范围：A-Z（排除容易混淆的字母I,O）
         """
-        # 使用大写字母和数字
-        chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-        # 生成4位随机组合
-        suffix = ''.join(random.choices(chars, k=4))
-        return f"R{suffix}"
+        # 数字部分：00-99
+        numbers = str(random.randint(0, 99)).zfill(2)
+        
+        # 字母部分：使用不易混淆的字母
+        letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ'  # 排除I,O
+        letter_suffix = ''.join(random.choices(letters, k=2))
+        
+        return f"R{numbers}{letter_suffix}"
 
     def extract_round_id(self, comment: str) -> Optional[str]:
         """从订单注释中提取round_id
@@ -1555,25 +1562,42 @@ class RoundManager:
             # 获取所有活跃订单和仓位
             positions = terminal_state.positions
             orders = terminal_state.orders
-
+            
             # 按照round_id分组
             position_groups = {}
+            order_groups = {}
+            
+            # 处理活跃仓位
             for pos in positions:
                 round_id = self.extract_round_id(pos.get('comment', ''))
                 if round_id:
                     if round_id not in position_groups:
                         position_groups[round_id] = []
                     position_groups[round_id].append(pos)
+            
+            # 处理限价单
+            for order in orders:
+                round_id = self.extract_round_id(order.get('comment', ''))
+                if round_id:
+                    if round_id not in order_groups:
+                        order_groups[round_id] = []
+                    order_groups[round_id].append(order)
+
+            # 合并所有round_id
+            all_round_ids = set(list(position_groups.keys()) + list(order_groups.keys()))
 
             # 重建rounds
-            for round_id, positions in position_groups.items():
-                if not positions:
+            for round_id in all_round_ids:
+                positions_list = position_groups.get(round_id, [])
+                orders_list = order_groups.get(round_id, [])
+                
+                if not positions_list and not orders_list:
                     continue
 
-                # 使用第一个position的信息创建round
-                first_pos = positions[0]
-                symbol = first_pos['symbol']
-                direction = first_pos['type']
+                # 使用第一个position或order的信息创建round
+                first_item = positions_list[0] if positions_list else orders_list[0]
+                symbol = first_item['symbol']
+                direction = first_item.get('type') or first_item.get('direction')
 
                 # 重建TradeRound对象
                 trade_round = TradeRound(
@@ -1583,25 +1607,25 @@ class RoundManager:
                     created_at=datetime.now(),
                     positions={},
                     tp_levels=[],
-                    stop_loss=first_pos.get('stopLoss'),
+                    stop_loss=first_item.get('stopLoss'),
                     status=RoundStatus.ACTIVE,
                     metadata={'restored': True}
                 )
 
                 # 添加positions
-                for pos in positions:
+                for pos in positions_list:
                     position = Position(
                         id=pos['id'],
                         symbol=pos['symbol'],
                         direction=pos['type'],
                         volume=pos['volume'],
-                        entry_price=pos['openPrice'],
+                        entry_price=pos.get('openPrice'),
                         stop_loss=pos.get('stopLoss'),
                         take_profit=pos.get('takeProfit'),
                         status=PositionStatus.ACTIVE,
                         metadata={
                             'restored': True,
-                            'original_comment': pos.get('comment', '')  # 保存原始comment
+                            'original_comment': pos.get('comment', '')
                         }
                     )
                     trade_round.positions[pos['id']] = position
@@ -1612,9 +1636,27 @@ class RoundManager:
                         if not any(tp.price == tp_price for tp in trade_round.tp_levels):
                             trade_round.tp_levels.append(TPLevel(price=tp_price))
 
+                # 添加pending orders
+                for order in orders_list:
+                    position = Position(
+                        id=order['id'],
+                        symbol=order['symbol'],
+                        direction=order.get('type') or order.get('direction'),
+                        volume=order['volume'],
+                        entry_price=order.get('price'),
+                        stop_loss=order.get('stopLoss'),
+                        take_profit=order.get('takeProfit'),
+                        status=PositionStatus.PENDING,
+                        metadata={
+                            'restored': True,
+                            'original_comment': order.get('comment', '')
+                        }
+                    )
+                    trade_round.positions[order['id']] = position
+
                 # 保存重建的round
                 self.rounds[round_id] = trade_round
-                logging.info(f"Restored round {round_id} with {len(positions)} positions")
+                logging.info(f"Restored round {round_id} with {len(positions_list)} positions and {len(orders_list)} orders")
 
                 # 设置价格监控
                 await self._setup_price_monitoring(symbol)
