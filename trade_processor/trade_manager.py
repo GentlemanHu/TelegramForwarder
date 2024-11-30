@@ -2,7 +2,7 @@ from metaapi_cloud_sdk import MetaApi,SynchronizationListener
 from typing import Dict, List, Optional, Any
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from .trade_config import TradeConfig
 
@@ -218,6 +218,7 @@ class TradeManager:
                     'entry_price': position.get('openPrice'),
                     'close_price': position.get('closePrice'),
                     'profit': position.get('profit'),
+                    'profit_pct': position.get('profitPercent', 0),
                     'stop_loss': position.get('stopLoss'),
                     'take_profit': position.get('takeProfit')
                 }
@@ -288,32 +289,42 @@ class TradeManager:
         try:
             logging.info(f"Position {position.get('id')} removed")
             
-            # 检查是否是真实持仓（已开仓或已关闭的持仓）
-            if position.get('state') not in ['OPENED', 'CLOSED']:
-                logging.info(f"Skipping notification for pending order removal: {position.get('id')}")
+            # 检查是否是真实持仓（检查是否有开仓价格）
+            if not position.get('openPrice'):
+                logging.info(f"Skipping notification for pending order: {position.get('id')}")
                 return
             
             # 准备通知数据
             notification_data = {
+                'id': position.get('id'),
                 'symbol': position.get('symbol'),
-                'type': position.get('type', 'UNKNOWN'),
+                'type': 'buy' if position.get('type', '').lower() == 'position_type_buy' else 'sell',
                 'volume': position.get('volume', 0),
-                'entry_price': position.get('entryPrice', 0),
-                'current_price': position.get('currentPrice', 0),
-                'profit': position.get('profit', 0),
-                'profit_pct': position.get('profitPercent', 0),
-                'stop_loss': position.get('stopLoss'),
-                'take_profit': position.get('takeProfit'),
-                'state': 'CLOSED',
-                'reason': position.get('reason', 'MANUAL')
+                'entry_price': float(position.get('openPrice', 0)),
+                'close_price': float(position.get('currentPrice', 0)),
+                'profit': float(position.get('profit', 0)),
+                'profit_pct': float(position.get('unrealizedProfit', 0)) / float(position.get('volume', 1)) / float(position.get('openPrice', 1)) * 100,
+                'duration': self._calculate_position_duration(position),
+                'platform': position.get('platform'),
+                'magic': position.get('magic'),
+                'swap': position.get('swap', 0),
+                'commission': position.get('commission', 0),
+                'unrealized_swap': position.get('unrealizedSwap', 0),
+                'unrealized_commission': position.get('unrealizedCommission', 0),
+                'realized_swap': position.get('realizedSwap', 0),
+                'realized_commission': position.get('realizedCommission', 0),
+                'realized_profit': position.get('realizedProfit', 0),
+                'unrealized_profit': position.get('unrealizedProfit', 0),
+                'current_tick_value': position.get('currentTickValue', 0),
+                'account_currency_exchange_rate': position.get('accountCurrencyExchangeRate', 1)
             }
             
-            # 添加利润表情
-            notification_data['profit_emoji'] = "💰" if notification_data['profit'] > 0 else "📉"
-            await self._send_notification('position_closed', notification_data)
+            # 发送通知
+            await self._send_notification('order_closed', notification_data)
             
         except Exception as e:
-            logging.error(f"Error handling position removal: {e}", exc_info=True)
+            logging.error(f"Error handling position removed: {e}")
+
 
     async def _handle_order_update(self, order: Dict):
         """处理订单更新事件"""
@@ -357,8 +368,8 @@ class TradeManager:
         try:
             logging.info(f"Handling position update: {position}")
             
-            # 检查是否是真实持仓（已开仓或已关闭的持仓）
-            if position.get('state') not in ['OPENED', 'CLOSED']:
+            # 检查是否是真实持仓（检查是否有开仓价格）
+            if not position.get('openPrice'):
                 logging.info(f"Skipping notification for pending order: {position.get('id')}")
                 return
             
@@ -1496,3 +1507,31 @@ class TradeManager:
         except Exception as e:
             logging.error(f"Error closing position {position_id}: {e}")
             return False
+
+    def _calculate_position_duration(self, position: Dict) -> str:
+        """计算持仓时长"""
+        try:
+            open_time = position.get('time')
+            close_time = position.get('updateTime') or datetime.now(timezone.utc)
+            
+            if not open_time:
+                return "N/A"
+                
+            duration = close_time - open_time
+            days = duration.days
+            hours = duration.seconds // 3600
+            minutes = (duration.seconds % 3600) // 60
+            
+            duration_parts = []
+            if days > 0:
+                duration_parts.append(f"{days}d")
+            if hours > 0:
+                duration_parts.append(f"{hours}h")
+            if minutes > 0:
+                duration_parts.append(f"{minutes}m")
+                
+            return " ".join(duration_parts) if duration_parts else "< 1m"
+            
+        except Exception as e:
+            logging.error(f"Error calculating position duration: {e}")
+            return "N/A"
