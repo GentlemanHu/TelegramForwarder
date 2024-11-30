@@ -441,12 +441,10 @@ class ForwardBot:
                     
                     current_price = price_info['ask'] if pos['type'] == 'buy' else price_info['bid']
                     entry_price = float(pos['openPrice'])
-                    is_long = pos['type'] == 'buy'
+                    profit = float(pos.get('profit', 0))
                 
-                    # 检查是否盈利
-                    is_profitable = (is_long and current_price > entry_price) or (not is_long and current_price < entry_price)
-                
-                    if is_profitable:
+                    # 直接使用profit判断是否盈利
+                    if profit > 0:
                         # 获取当前止损
                         current_sl = pos.get('stopLoss')
                     
@@ -466,7 +464,7 @@ class ForwardBot:
                                        f"\n  Old SL: {current_sl}"
                                        f"\n  New SL: {entry_price}"
                                        f"\n  Volume: {pos.get('volume')}"
-                                       f"\n  Profit: {pos.get('profit')}"
+                                       f"\n  Profit: {profit}"
                                        f"\n  Profit %: {pos.get('profitPercent')}%")
                         else:
                             logging.error(f"Failed to modify position {pos['id']}:"
@@ -474,14 +472,16 @@ class ForwardBot:
                                         f"\n  Type: {pos['type']}"
                                         f"\n  Entry: {entry_price}"
                                         f"\n  Current: {current_price}"
-                                        f"\n  Old SL: {current_sl}")
+                                        f"\n  Old SL: {current_sl}"
+                                        f"\n  Profit: {profit}"
+                                        f"\n  Profit %: {pos.get('profitPercent')}%")
                     else:
                         logging.info(f"Position {pos['id']} not profitable:"
                                    f"\n  Symbol: {pos['symbol']}"
                                    f"\n  Type: {pos['type']}"
                                    f"\n  Entry: {entry_price}"
                                    f"\n  Current: {current_price}"
-                                   f"\n  Profit: {pos.get('profit')}"
+                                   f"\n  Profit: {profit}"
                                    f"\n  Profit %: {pos.get('profitPercent')}%")
                     
                 except Exception as e:
