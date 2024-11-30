@@ -341,7 +341,7 @@ class TradeManager:
                 except Exception as e:
                     logging.error(f"Error in position listener: {e}", exc_info=True)
 
-            # 发送持仓更新通知
+            # 准备通知数据
             notification_data = {
                 'symbol': position.get('symbol'),
                 'type': position.get('type', 'UNKNOWN'),
@@ -349,14 +349,26 @@ class TradeManager:
                 'entry_price': position.get('entryPrice', 0),
                 'current_price': position.get('currentPrice', 0),
                 'profit': position.get('profit', 0),
+                'profit_pct': position.get('profitPercent', 0),
                 'stop_loss': position.get('stopLoss'),
                 'take_profit': position.get('takeProfit'),
-                'state': position.get('state', 'UNKNOWN')
+                'state': position.get('state', 'UNKNOWN'),
+                'reason': position.get('reason', 'UNKNOWN')  # 添加关闭原因
             }
             
             # 根据持仓状态发送不同类型的通知
-            if position.get('state') == 'CLOSED':
-                await self._send_notification('position_closed', notification_data)
+            state = position.get('state', '').upper()
+            reason = position.get('reason', '').upper()
+            
+            if state == 'CLOSED':
+                if reason == 'TP':
+                    await self._send_notification('position_tp', notification_data)
+                elif reason == 'SL':
+                    await self._send_notification('position_sl', notification_data)
+                else:
+                    # 添加利润表情
+                    notification_data['profit_emoji'] = "💰" if notification_data['profit'] > 0 else "📉"
+                    await self._send_notification('position_closed', notification_data)
             else:
                 await self._send_notification('position_updated', notification_data)
                 
@@ -1292,21 +1304,11 @@ class TradeManager:
     async def on_position_update(self, position):
         """持仓更新回调"""
         try:
-            # 更新持仓信息
+            # 更新持仓信息，但不发送通知
             await super().on_position_update(position)
             
-            # 异步发送持仓更新通知
-            notification_data = {
-                'symbol': position.get('symbol'),
-                'type': position.get('type'),
-                'volume': position.get('volume'),
-                'entry_price': position.get('entryPrice'),
-                'current_price': position.get('currentPrice'),
-                'profit': position.get('profit'),
-                'stop_loss': position.get('stopLoss'),
-                'take_profit': position.get('takeProfit')
-            }
-            await self._send_notification('position_updated', notification_data)
+            # 让_handle_position_update来处理通知
+            await self._handle_position_update(position)
             
         except Exception as e:
             logging.error(f"Error handling position update: {e}")

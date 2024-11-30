@@ -545,7 +545,34 @@ class MyMessageHandler:
                     "Error Type: {error_type}\n"
                     "Message: {error_message}\n"
                     "Time: {error_time}"
-                )
+                ),
+                'position_tp': (
+                    "🎯 <b>Take Profit Hit!</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
+                    "Entry: <code>{entry_price:.5f}</code>\n"
+                    "Exit: <code>{current_price:.5f}</code>\n"
+                    "💰 Profit: <code>{profit:.2f}</code> ({profit_pct:.2f}%)"
+                ),
+                'position_sl': (
+                    "🛡️ <b>Stop Loss Hit</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
+                    "Entry: <code>{entry_price:.5f}</code>\n"
+                    "Exit: <code>{current_price:.5f}</code>\n"
+                    "📉 Loss: <code>{profit:.2f}</code> ({profit_pct:.2f}%)"
+                ),
+                'position_closed': (
+                    "🔒 <b>Position Closed</b>\n\n"
+                    "Symbol: <code>{symbol}</code>\n"
+                    "Type: <code>{type}</code>\n"
+                    "Volume: <code>{volume}</code>\n"
+                    "Entry: <code>{entry_price:.5f}</code>\n"
+                    "Exit: <code>{current_price:.5f}</code>\n"
+                    "{profit_emoji} P/L: <code>{profit:.2f}</code> ({profit_pct:.2f}%)"
+                ),
             }
             
             template = templates.get(event_type)
