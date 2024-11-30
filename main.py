@@ -265,6 +265,9 @@ class ForwardBot:
         self.application.add_handler(CommandHandler("breakeven", self.breakeven_command))
         self.application.add_handler(CommandHandler("closeall", self.closeall_command))
         
+        # 添加closeall回调处理器
+        self.application.add_handler(CallbackQueryHandler(self.closeall_callback, pattern='^closeall_'))
+        
         # 添加频道管理处理器
         for handler in self.channel_manager.get_handlers():
             self.application.add_handler(handler)

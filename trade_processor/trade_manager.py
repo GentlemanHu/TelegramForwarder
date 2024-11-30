@@ -1397,10 +1397,11 @@ class TradeManager:
                 logging.error(f"Position {position_id} not found")
                 return False
             
-            # 修改止损
+            # 修改止损，同时保持原来的止盈价格不变
             await self.connection.modify_position(
                 position_id,
-                stop_loss=stop_loss
+                stop_loss=stop_loss,
+                take_profit=position.get('takeProfit')  # 保持原来的止盈价格
             )
             
             # 发送通知
