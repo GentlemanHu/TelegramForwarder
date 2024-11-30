@@ -249,22 +249,18 @@ class SignalProcessor:
     async def _handle_entry_signal(self, signal: Dict[str, Any]):
         """处理入场信号"""
         try:
-            round_id = signal['round_id']
+            symbol = signal['symbol']
+            direction = signal['action']  # 获取交易方向
             terminal_state = self.position_manager.trade_manager.connection.terminal_state
             
-            # 检查是否是同一个symbol的已有信号的更新
-            existing_round = None
-            symbol = signal['symbol']
+            # 尝试合并最近5分钟内的同方向rounds
+            existing_round_id = await self.position_manager.round_manager.merge_rounds(
+                symbol=symbol,
+                direction=direction,  # 传入交易方向
+                time_window=300
+            )
             
-            for active_round in self.active_rounds.values():
-                if (active_round['signal']['symbol'] == symbol and
-                    active_round['status'] == 'active' and
-                    (datetime.now() - active_round['timestamp']).total_seconds() < 300):
-                    existing_round = active_round
-                    round_id = existing_round['round_id']
-                    break
-
-            if existing_round:
+            if existing_round_id:
                 # 更新现有round的配置
                 config_updates = {
                     'stop_loss': signal.get('stop_loss'),
@@ -276,32 +272,39 @@ class SignalProcessor:
                     config_updates['trailing_stop'] = signal['trailing_stop']
                     
                 await self.position_manager.update_positions_config(
-                    round_id, 
+                    existing_round_id, 
                     config_updates
                 )
-                logging.info(f"Updated existing round: {round_id}")
+                logging.info(f"Updated existing {direction} round: {existing_round_id}")
+                return existing_round_id
             else:
-                # 创建新的交易round
-                if signal['layers']['enabled']:
-                    round_id = await self.position_manager.create_layered_positions(signal)
+                # 生成新的round标识
+                round_id = self.position_manager.round_manager.generate_round_suffix()
+                signal['round_id'] = round_id
+                
+                if signal.get('layers', {}).get('enabled'):
+                    success = await self.position_manager.create_layered_positions(signal)
                 else:
-                    round_id = await self.position_manager.create_single_position(signal)
+                    success = await self.position_manager.create_single_position(signal)
 
-                if round_id:
+                if success:
                     self.active_rounds[round_id] = {
                         'round_id': round_id,
                         'signal': signal,
                         'status': 'active',
                         'timestamp': datetime.now()
                     }
-                    logging.info(f"Created new trading round: {round_id}")
+                    logging.info(f"Created new {direction} round: {round_id}")
+                    return round_id
                 else:
                     logging.error("Failed to create positions")
+                    return None
 
         except Exception as e:
             logging.error(f"Error handling entry signal: {e}")
             if hasattr(e, '__dict__'):
                 logging.error(f"Error details: {e.__dict__}")
+            return None
 
 
     async def _handle_exit_signal(self, signal: Dict[str, Any]):

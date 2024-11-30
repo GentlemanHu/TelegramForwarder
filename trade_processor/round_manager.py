@@ -11,6 +11,7 @@ from .position import Position, PositionStatus
 from .signal_tracker import SignalTracker
 from .tp_manager import DynamicTPManager, TPStatus, TPLevel
 from .market_monitor import MarketMonitor
+import random
 
 class RoundStatus(Enum):
     PENDING = "pending"
@@ -718,7 +719,7 @@ class RoundManager:
     ) -> Optional[str]:
         """创建交易轮次"""
         try:
-            round_id = signal.get('round_id') or f"R_{signal['symbol']}_{int(datetime.now().timestamp())}"
+            round_id = signal.get('round_id') or self.generate_round_suffix()
             
             trade_round = TradeRound(
                 id=round_id,
@@ -1137,7 +1138,7 @@ class RoundManager:
                 return None
 
             # 生成round_id
-            round_id = str(uuid.uuid4())
+            round_id = self.generate_round_suffix()
 
             # 解析信号参数
             entry_type = signal.get('entry_type', 'limit')  # 默认使用限价单
@@ -1354,7 +1355,7 @@ class RoundManager:
         try:
             # 生成唯一的round_id
             if not round_id:
-                round_id = f"R_{signal['symbol']}_{int(datetime.now().timestamp())}"
+                round_id = self.generate_round_suffix()
                 
             logging.info(f"Processing entry signal for round {round_id}")
             logging.info(f"Signal details: {signal}")
@@ -1449,3 +1450,179 @@ class RoundManager:
             
         except Exception as e:
             logging.error(f"Error handling entry signal: {e}")
+
+    def generate_round_suffix(self) -> str:
+        """生成round标识，格式为 R + 4位字母数字组合
+        例如：RA2B3, RX5Y9 等
+        """
+        # 使用大写字母和数字
+        chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+        # 生成4位随机组合
+        suffix = ''.join(random.choices(chars, k=4))
+        return f"R{suffix}"
+
+    def extract_round_id(self, comment: str) -> Optional[str]:
+        """从订单注释中提取round_id
+        Args:
+            comment: 订单注释，格式如 "T_BTC_4244:R4199"
+        Returns:
+            round_id部分，如 "R4199"
+        """
+        try:
+            if not comment:
+                return None
+            parts = comment.split(':')
+            if len(parts) != 2:
+                return None
+            round_part = parts[1]
+            if not round_part.startswith('R'):
+                return None
+            return round_part
+        except Exception:
+            return None
+
+    async def merge_rounds(self, symbol: str, direction: str, time_window: int = 300) -> Optional[str]:
+        """合并同一个symbol在指定时间窗口内的rounds
+        Args:
+            symbol: 交易对
+            direction: 交易方向 ('buy' 或 'sell')
+            time_window: 时间窗口（秒），默认5分钟
+        """
+        try:
+            now = datetime.now()
+            recent_rounds = []
+
+            # 找出需要合并的rounds（同币种同方向）
+            for round_id, trade_round in self.rounds.items():
+                if (trade_round.symbol == symbol and 
+                    trade_round.direction == direction and  # 添加方向判断
+                    trade_round.status != RoundStatus.CLOSED and
+                    (now - trade_round.created_at).total_seconds() < time_window):
+                    recent_rounds.append(trade_round)
+
+            if len(recent_rounds) <= 1:
+                return None
+
+            # 按创建时间排序
+            recent_rounds.sort(key=lambda x: x.created_at)
+            main_round = recent_rounds[0]
+            
+            # 合并到第一个round
+            for other_round in recent_rounds[1:]:
+                # 合并positions
+                main_round.positions.update(other_round.positions)
+                
+                # 合并并去重tp_levels
+                existing_prices = {tp.price for tp in main_round.tp_levels}
+                for tp in other_round.tp_levels:
+                    if tp.price not in existing_prices:
+                        main_round.tp_levels.append(tp)
+                        existing_prices.add(tp.price)
+                
+                # 更新所有position的round_id
+                for pos_id in other_round.positions:
+                    # 保持原有订单ID格式，只更新round部分
+                    position = other_round.positions[pos_id]
+                    original_comment = position.metadata.get('original_comment', '')
+                    if ':' in original_comment:
+                        new_comment = f"{original_comment.split(':')[0]}:{main_round.id}"
+                        await self.connection.modify_position(
+                            position_id=pos_id,
+                            comment=new_comment
+                        )
+                
+                # 删除旧的round
+                self.rounds.pop(other_round.id)
+
+            logging.info(f"Merged {len(recent_rounds)} {direction} rounds for {symbol} into {main_round.id}")
+            return main_round.id
+
+        except Exception as e:
+            logging.error(f"Error merging rounds: {e}")
+            return None
+
+    async def initialize(self):
+        """初始化RoundManager，包括重建round信息"""
+        try:
+            if self._initialized:
+                return True
+
+            terminal_state = self.connection.terminal_state
+            if not terminal_state:
+                logging.error("Terminal state not available")
+                return False
+
+            # 获取所有活跃订单和仓位
+            positions = terminal_state.positions
+            orders = terminal_state.orders
+
+            # 按照round_id分组
+            position_groups = {}
+            for pos in positions:
+                round_id = self.extract_round_id(pos.get('comment', ''))
+                if round_id:
+                    if round_id not in position_groups:
+                        position_groups[round_id] = []
+                    position_groups[round_id].append(pos)
+
+            # 重建rounds
+            for round_id, positions in position_groups.items():
+                if not positions:
+                    continue
+
+                # 使用第一个position的信息创建round
+                first_pos = positions[0]
+                symbol = first_pos['symbol']
+                direction = first_pos['type']
+
+                # 重建TradeRound对象
+                trade_round = TradeRound(
+                    id=round_id,
+                    symbol=symbol,
+                    direction=direction,
+                    created_at=datetime.now(),
+                    positions={},
+                    tp_levels=[],
+                    stop_loss=first_pos.get('stopLoss'),
+                    status=RoundStatus.ACTIVE,
+                    metadata={'restored': True}
+                )
+
+                # 添加positions
+                for pos in positions:
+                    position = Position(
+                        id=pos['id'],
+                        symbol=pos['symbol'],
+                        direction=pos['type'],
+                        volume=pos['volume'],
+                        entry_price=pos['openPrice'],
+                        stop_loss=pos.get('stopLoss'),
+                        take_profit=pos.get('takeProfit'),
+                        status=PositionStatus.ACTIVE,
+                        metadata={
+                            'restored': True,
+                            'original_comment': pos.get('comment', '')  # 保存原始comment
+                        }
+                    )
+                    trade_round.positions[pos['id']] = position
+
+                    # 从position重建tp_levels
+                    if pos.get('takeProfit'):
+                        tp_price = float(pos['takeProfit'])
+                        if not any(tp.price == tp_price for tp in trade_round.tp_levels):
+                            trade_round.tp_levels.append(TPLevel(price=tp_price))
+
+                # 保存重建的round
+                self.rounds[round_id] = trade_round
+                logging.info(f"Restored round {round_id} with {len(positions)} positions")
+
+                # 设置价格监控
+                await self._setup_price_monitoring(symbol)
+
+            self._initialized = True
+            logging.info(f"RoundManager initialized, restored {len(self.rounds)} rounds")
+            return True
+
+        except Exception as e:
+            logging.error(f"Error initializing RoundManager: {e}")
+            return False
