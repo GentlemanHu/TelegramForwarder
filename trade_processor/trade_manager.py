@@ -284,13 +284,36 @@ class TradeManager:
 
 
     async def _handle_position_removed(self, position: Dict):
-        """Handle position removal"""
+        """处理持仓移除事件"""
         try:
-            position_id = position.get('id')
-            if position_id:
-                logging.info(f"Position {position_id} removed")
+            logging.info(f"Position {position.get('id')} removed")
+            
+            # 检查是否是真实持仓（已开仓）
+            if not position.get('entryPrice'):
+                logging.info(f"Skipping notification for pending order removal: {position.get('id')}")
+                return
+            
+            # 准备通知数据
+            notification_data = {
+                'symbol': position.get('symbol'),
+                'type': position.get('type', 'UNKNOWN'),
+                'volume': position.get('volume', 0),
+                'entry_price': position.get('entryPrice', 0),
+                'current_price': position.get('currentPrice', 0),
+                'profit': position.get('profit', 0),
+                'profit_pct': position.get('profitPercent', 0),
+                'stop_loss': position.get('stopLoss'),
+                'take_profit': position.get('takeProfit'),
+                'state': 'CLOSED',
+                'reason': position.get('reason', 'MANUAL')
+            }
+            
+            # 添加利润表情
+            notification_data['profit_emoji'] = "💰" if notification_data['profit'] > 0 else "📉"
+            await self._send_notification('position_closed', notification_data)
+            
         except Exception as e:
-            logging.error(f"Error handling position removal: {e}")
+            logging.error(f"Error handling position removal: {e}", exc_info=True)
 
     async def _handle_order_update(self, order: Dict):
         """处理订单更新事件"""
@@ -334,6 +357,11 @@ class TradeManager:
         try:
             logging.info(f"Handling position update: {position}")
             
+            # 检查是否是真实持仓（已开仓）
+            if not position.get('entryPrice'):
+                logging.info(f"Skipping notification for pending order: {position.get('id')}")
+                return
+            
             # 通知持仓监听器
             for listener in self._position_listeners:
                 try:
@@ -353,7 +381,7 @@ class TradeManager:
                 'stop_loss': position.get('stopLoss'),
                 'take_profit': position.get('takeProfit'),
                 'state': position.get('state', 'UNKNOWN'),
-                'reason': position.get('reason', 'UNKNOWN')  # 添加关闭原因
+                'reason': position.get('reason', 'UNKNOWN')
             }
             
             # 根据持仓状态发送不同类型的通知
@@ -374,6 +402,7 @@ class TradeManager:
                 
         except Exception as e:
             logging.error(f"Error handling position update: {e}", exc_info=True)
+
 
     async def get_current_price(self, symbol: str) -> Optional[Dict]:
         """获取当前价格"""
@@ -1308,7 +1337,7 @@ class TradeManager:
             await super().on_position_update(position)
             
             # 让_handle_position_update来处理通知
-            await self._handle_position_update(position)
+            # await self._handle_position_update(position)
             
         except Exception as e:
             logging.error(f"Error handling position update: {e}")
