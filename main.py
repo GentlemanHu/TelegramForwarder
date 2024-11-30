@@ -418,12 +418,12 @@ class ForwardBot:
             if not self.trade_manager:
                 await update.message.reply_text(get_text(lang, 'trade_manager_error'))
                 return
-            
+        
             positions = await self.trade_manager.get_positions()
             if not positions:
                 await update.message.reply_text(get_text(lang, 'no_positions'))
                 return
-            
+        
             # 筛选盈利仓位并设置止损
             modified_count = 0
             for pos in positions:
@@ -433,42 +433,64 @@ class ForwardBot:
                     if not terminal_state:
                         logging.error("Terminal state not available")
                         continue
-                        
+                    
                     price_info = terminal_state.price(pos['symbol'])
                     if not price_info:
                         logging.error(f"Price info not available for {pos['symbol']}")
                         continue
-                        
+                    
                     current_price = price_info['ask'] if pos['type'] == 'buy' else price_info['bid']
                     entry_price = float(pos['openPrice'])
                     is_long = pos['type'] == 'buy'
-                    
+                
                     # 检查是否盈利
                     is_profitable = (is_long and current_price > entry_price) or (not is_long and current_price < entry_price)
-                    
+                
                     if is_profitable:
+                        # 获取当前止损
+                        current_sl = pos.get('stopLoss')
+                    
                         # 设置止损到入场价
                         success = await self.trade_manager.modify_position_sl(
                             pos['id'],
                             entry_price
                         )
+                    
                         if success:
                             modified_count += 1
-                            logging.info(f"Set breakeven for position {pos['id']}: {pos['symbol']} {pos['type']} "
-                                       f"Entry: {entry_price}, Current: {current_price}")
+                            logging.info(f"Position {pos['id']} breakeven set:"
+                                       f"\n  Symbol: {pos['symbol']}"
+                                       f"\n  Type: {pos['type']}"
+                                       f"\n  Entry: {entry_price}"
+                                       f"\n  Current: {current_price}"
+                                       f"\n  Old SL: {current_sl}"
+                                       f"\n  New SL: {entry_price}"
+                                       f"\n  Volume: {pos.get('volume')}"
+                                       f"\n  Profit: {pos.get('profit')}"
+                                       f"\n  Profit %: {pos.get('profitPercent')}%")
                         else:
-                            logging.error(f"Failed to modify position {pos['id']}")
+                            logging.error(f"Failed to modify position {pos['id']}:"
+                                        f"\n  Symbol: {pos['symbol']}"
+                                        f"\n  Type: {pos['type']}"
+                                        f"\n  Entry: {entry_price}"
+                                        f"\n  Current: {current_price}"
+                                        f"\n  Old SL: {current_sl}")
                     else:
-                        logging.info(f"Position {pos['id']} not profitable: {pos['symbol']} {pos['type']} "
-                                   f"Entry: {entry_price}, Current: {current_price}")
-                        
+                        logging.info(f"Position {pos['id']} not profitable:"
+                                   f"\n  Symbol: {pos['symbol']}"
+                                   f"\n  Type: {pos['type']}"
+                                   f"\n  Entry: {entry_price}"
+                                   f"\n  Current: {current_price}"
+                                   f"\n  Profit: {pos.get('profit')}"
+                                   f"\n  Profit %: {pos.get('profitPercent')}%")
+                    
                 except Exception as e:
                     logging.error(f"Error processing position {pos['id']}: {e}")
-            
+        
             await update.message.reply_text(
                 get_text(lang, 'breakeven_success', count=modified_count)
             )
-            
+        
         except Exception as e:
             logging.error(f"Error in breakeven command: {e}")
             await update.message.reply_text(f"❌ Error: {str(e)}")
