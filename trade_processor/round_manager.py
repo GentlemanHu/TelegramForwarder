@@ -1610,21 +1610,28 @@ class RoundManager:
     def extract_round_id(self, comment: str) -> Optional[str]:
         """从订单注释中提取round_id
         Args:
-            comment: 订单注释，格式如 "T_BTC_4244:R4199"
+            comment: 订单注释，可能的格式：
+            1. "T_BTC_4244:R4199" - 完整格式
+            2. "R4199" - 简单格式
         Returns:
             round_id部分，如 "R4199"
         """
         try:
             if not comment:
                 return None
+            
+            # 如果comment本身就是以R开头，直接返回
+            if comment.startswith('R'):
+                return comment
+            
+            # 否则尝试从完整格式中提取
             parts = comment.split(':')
-            if len(parts) != 2:
-                return None
-            round_part = parts[1]
-            if not round_part.startswith('R'):
-                return None
-            return round_part
-        except Exception:
+            if len(parts) == 2 and parts[1].startswith('R'):
+                return parts[1]
+            
+            return None
+        except Exception as e:
+            logging.error(f"Error extracting round_id from comment '{comment}': {e}")
             return None
 
     async def merge_rounds(self, symbol: str, direction: str, time_window: int = 300) -> Optional[str]:
