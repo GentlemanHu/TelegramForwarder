@@ -427,13 +427,34 @@ class ForwardBot:
             # 筛选盈利仓位并设置止损
             modified_count = 0
             for pos in positions:
-                if float(pos.get('profit', 0)) > 0:
+                profit = float(pos.get('profit', 0))
+                profit_pct = float(pos.get('profitPercent', 0))
+                
+                # 检查利润和利润百分比
+                if profit > 0 and profit_pct > 0:
                     try:
-                        await self.trade_manager.modify_position_sl(
-                            pos['id'],
-                            pos['openPrice']  # 设置止损到入场价
-                        )
-                        modified_count += 1
+                        # 获取当前价格
+                        terminal_state = self.trade_manager.connection.terminal_state
+                        current_price = None
+                        if terminal_state:
+                            price_info = terminal_state.price(pos['symbol'])
+                            if price_info:
+                                current_price = price_info['ask'] if pos['type'] == 'buy' else price_info['bid']
+                        
+                        # 如果当前价格在入场价之上（多仓）或之下（空仓），才设置止损
+                        entry_price = float(pos['openPrice'])
+                        if current_price:
+                            is_profitable = (pos['type'] == 'buy' and current_price > entry_price) or \
+                                         (pos['type'] == 'sell' and current_price < entry_price)
+                            if is_profitable:
+                                await self.trade_manager.modify_position_sl(
+                                    pos['id'],
+                                    entry_price  # 设置止损到入场价
+                                )
+                                modified_count += 1
+                                logging.info(f"Modified position {pos['id']} to breakeven. "
+                                           f"Type: {pos['type']}, Entry: {entry_price}, "
+                                           f"Current: {current_price}, Profit: {profit}")
                     except Exception as e:
                         logging.error(f"Error modifying position {pos['id']}: {e}")
             

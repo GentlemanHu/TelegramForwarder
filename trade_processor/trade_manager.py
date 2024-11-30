@@ -288,8 +288,8 @@ class TradeManager:
         try:
             logging.info(f"Position {position.get('id')} removed")
             
-            # 检查是否是真实持仓（已开仓）
-            if not position.get('entryPrice'):
+            # 检查是否是真实持仓（已开仓或已关闭的持仓）
+            if position.get('state') not in ['OPENED', 'CLOSED']:
                 logging.info(f"Skipping notification for pending order removal: {position.get('id')}")
                 return
             
@@ -357,8 +357,8 @@ class TradeManager:
         try:
             logging.info(f"Handling position update: {position}")
             
-            # 检查是否是真实持仓（已开仓）
-            if not position.get('entryPrice'):
+            # 检查是否是真实持仓（已开仓或已关闭的持仓）
+            if position.get('state') not in ['OPENED', 'CLOSED']:
                 logging.info(f"Skipping notification for pending order: {position.get('id')}")
                 return
             
