@@ -519,7 +519,7 @@ class RoundManager:
                                   f"\n  ID: {pos.get('id')}"
                                   f"\n  Symbol: {pos.get('symbol')}"
                                   f"\n  Comment: {pos.get('comment')}")
-            
+        
             # 处理限价单
             for order in orders:
                 round_id = self.extract_round_id(order.get('comment', ''))
@@ -639,6 +639,22 @@ class RoundManager:
         except Exception as e:
             logging.error(f"Error initializing RoundManager: {e}")
             return False
+
+    async def _setup_listeners(self):
+        """设置事件监听器"""
+        try:
+            if not self.connection:
+                return
+            
+            # 使用正确的监听器添加方法
+            self.connection.add_synchronization_listener(self)
+            
+            # 设置价格监听
+            for symbol in self._subscribed_symbols:
+                await self._setup_price_monitoring(symbol)
+
+        except Exception as e:
+            logging.error(f"Error setting up listeners: {e}")
 
     async def _update_positions_sl(self, trade_round: TradeRound, new_stop_loss: float):
         """更新所有仓位的止损"""
@@ -1501,7 +1517,7 @@ class RoundManager:
                     round.tp_levels.append(TPLevel(price=price, status=TPStatus.PENDING))
             
             # 检查是否需要分层
-            if signal.get('layers', {}).get('enabled', False):
+            if signal.get('layers', {}).get('enabled'):
                 logging.info(
                     f"开始创建分层订单:\n"
                     f"Symbol: {signal['symbol']}\n"
