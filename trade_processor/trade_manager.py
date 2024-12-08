@@ -668,7 +668,7 @@ class TradeManager:
                 return None
                 
             # 使用connection对象获取账户信息
-            account_info = await self.connection.get_account_information()
+            account_info = await self.get_account_information()
             return account_info
             
         except Exception as e:

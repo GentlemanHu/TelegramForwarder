@@ -4,9 +4,13 @@ import asyncio
 from datetime import datetime
 from .position import Position, PositionStatus 
 from .round_manager import RoundManager, TradeRound, RoundStatus, TPLevel  # 添加这行
-from .layer_manager import SmartLayerManager, LayerDistributionType
 from .trade_manager import TradeManager
-
+from .layer_manager import (
+    SmartLayerManager, 
+    LayerDistributionType, 
+    LayerConfig,
+    Layer
+)
 
 class PositionManager:
     def __init__(self, trade_manager: TradeManager):
