@@ -30,6 +30,19 @@ TelegramForwarder is a powerful and user-friendly Telegram bot designed for auto
 - 🔒 Owner-only access control
 - ⚡ Asynchronous processing for better performance
 
+## 📂 Directory Structure
+
+The project has the following directory structure:
+
+```
+TelegramForwarder/
+├── data/
+│   ├── backups/     # Database backups
+│   └── media_cache/ # Temporary media files
+├── logs/          # Log files
+└── ...
+```
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -110,6 +123,19 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 💾 使用 SQLite 数据库持久化存储
 - 🔒 仅限所有者访问控制
 - ⚡ 异步处理提升性能
+
+## 📂 目录结构
+
+项目具有以下目录结构：
+
+```
+TelegramForwarder/
+├── data/
+│   ├── backups/     # 数据库备份
+│   └── media_cache/ # 临时媒体文件
+├── logs/          # 日志文件
+└── ...
+```
 
 ## 快速开始
 

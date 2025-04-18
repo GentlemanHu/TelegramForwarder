@@ -840,8 +840,12 @@ class MyMessageHandler:
             file_size = getattr(message.media, 'file_size', 0) or getattr(message.media, 'size', 0)
             logging.info(f"开始下载媒体文件，大小: {file_size / (1024*1024):.2f}MB")
 
+            # 确保媒体缓存目录存在
+            media_cache_dir = "data/media_cache"
+            os.makedirs(media_cache_dir, exist_ok=True)
+
             # 创建临时文件
-            tmp = NamedTemporaryFile(delete=False, prefix='tg_', suffix=f'.{media_type}')
+            tmp = NamedTemporaryFile(delete=False, prefix='tg_', suffix=f'.{media_type}', dir=media_cache_dir)
             file_path = tmp.name
 
             # 使用分块下载
@@ -1030,10 +1034,14 @@ class MyMessageHandler:
                                     try:
                                         # 检查文件是否存在
                                         if os.path.exists(media['path']):
+                                            # 确保媒体缓存目录存在
+                                            media_cache_dir = "data/media_cache"
+                                            os.makedirs(media_cache_dir, exist_ok=True)
+
                                             # 创建新的临时文件
                                             with open(media['path'], 'rb') as src_file:
                                                 content = src_file.read()
-                                                tmp = NamedTemporaryFile(delete=False, prefix='tg_copy_', suffix=f'.{media["type"]}')
+                                                tmp = NamedTemporaryFile(delete=False, prefix='tg_copy_', suffix=f'.{media["type"]}', dir=media_cache_dir)
                                                 tmp.write(content)
                                                 tmp.close()
 

@@ -41,6 +41,10 @@ ENV/
 # Database
 *.db
 *.sqlite3
+data/backups/
+
+# Media cache
+data/media_cache/
 
 # Logs
 *.log

@@ -45,7 +45,8 @@ class ChannelManager:
         language_display_names = {
             'en': 'English',
             'zh': '中文',
-            # 添加其他语言的显示名称
+            'ru': 'Русский',
+            'uk': 'Українська'
         }
 
         # 动态生成语言按钮

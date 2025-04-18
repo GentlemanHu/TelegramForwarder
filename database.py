@@ -22,7 +22,15 @@ class Database:
 
         # 如果数据库已存在，创建备份
         if existing_db:
-            backup_name = f"{self.database_name}.backup_{int(time.time())}"
+            # 确保备份目录存在
+            backup_dir = "data/backups"
+            os.makedirs(backup_dir, exist_ok=True)
+
+            # 生成备份文件名
+            db_filename = os.path.basename(self.database_name)
+            backup_name = os.path.join(backup_dir, f"{db_filename}.backup_{int(time.time())}")
+
+            # 创建备份
             shutil.copy2(self.database_name, backup_name)
             logging.info(f"已创建数据库备份: {backup_name}")
 

@@ -4,6 +4,12 @@ import logging
 
 TRANSLATIONS = {
     'uk': {
+        # Команди
+        'welcome_command': 'Запустити бота',
+        'channels_command': 'Керування каналами та пересиланням',
+        'language_command': 'Змінити налаштування мови',
+        'help_command': 'Показати довідку',
+
         # 🔽 Переклад українською мовою
         'file_cleanup_success': "Файл очищено: {file_path}",
         'file_cleanup_error': "Помилка очищення файлу {file_path}: {error}",
@@ -97,7 +103,7 @@ TRANSLATIONS = {
         'page_info': "Сторінка {current}/{total}",
         'language_changed': "✅ Мову змінено на українську",
         'select_language': "Оберіть мову:",
-        'current_language': "Поточна мова: {lang}",
+        'current_language': "Поточна мова: {language_name}",
         'help_message': """
 📚 *Довідка по Channel Forward Bot*
 
@@ -138,6 +144,12 @@ TRANSLATIONS = {
 """
     },
     'ru': {
+        # Команды
+        'welcome_command': 'Запустить бота',
+        'channels_command': 'Управление каналами и пересылкой',
+        'language_command': 'Изменить настройки языка',
+        'help_command': 'Показать справку',
+
         'file_cleanup_success': "Файл очищен: {file_path}",
         'file_cleanup_error': "Ошибка при очистке файла {file_path}: {error}",
         'cleanup_task_error': "Ошибка в задаче очистки: {error}",
@@ -230,7 +242,7 @@ TRANSLATIONS = {
         'page_info': "Страница {current}/{total}",
         'language_changed': "✅ Язык изменён на русский",
         'select_language': "Выберите язык:",
-        'current_language': "Текущий язык: {lang}",
+        'current_language': "Текущий язык: {language_name}",
         'help_message': "..."
     },
     'en': {
