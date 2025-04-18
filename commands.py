@@ -1,9 +1,10 @@
 # commands.py
 from typing import Dict, List, Tuple
+from locales import TRANSLATIONS
 
 class BotCommands:
     """Bot commands configuration"""
-    
+
     @staticmethod
     def get_commands() -> Dict[str, Dict[str, List[Tuple[str, str]]]]:
         """
@@ -19,32 +20,37 @@ class BotCommands:
             }
         }
         """
-        return {
-            'en': {
-                'commands': [
-                    ('start', 'Start the bot'),
-                    ('channels', 'Manage channels and forwarding'),
-                    ('language', 'Change language settings'),
-                    ('help', 'Show help message'),
-                ],
-                'scope': 'default'
-            },
-            'zh': {
-                'commands': [
-                    ('start', '启动机器人'),
-                    ('channels', '管理频道和转发'),
-                    ('language', '更改语言设置'),
-                    ('help', '显示帮助信息'),
-                ],
+        commands_dict = {}
+
+        # 命令列表 - 所有语言通用
+        command_keys = [
+            ('start', 'welcome_command'),
+            ('channels', 'channels_command'),
+            ('language', 'language_command'),
+            ('help', 'help_command')
+        ]
+
+        # 为每种语言生成命令描述
+        for lang_code in TRANSLATIONS.keys():
+            commands = []
+            for cmd, key in command_keys:
+                # 尝试从翻译中获取命令描述，如果没有则使用英文
+                description = TRANSLATIONS.get(lang_code, {}).get(key,
+                                TRANSLATIONS.get('en', {}).get(key, cmd))
+                commands.append((cmd, description))
+
+            commands_dict[lang_code] = {
+                'commands': commands,
                 'scope': 'default'
             }
-        }
+
+        return commands_dict
 
     @staticmethod
     async def setup_commands(application):
         """Setup bot commands for each language"""
         commands = BotCommands.get_commands()
-        
+
         for lang_code, config in commands.items():
             try:
                 await application.bot.set_my_commands(

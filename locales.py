@@ -234,6 +234,13 @@ TRANSLATIONS = {
         'help_message': "..."
     },
     'en': {
+        # 命令描述
+        'welcome_command': 'Start the bot',
+        'channels_command': 'Manage channels and forwarding',
+        'language_command': 'Change language settings',
+        'help_command': 'Show help message',
+
+        # 系统消息
         'file_cleanup_success': "Cleaned up file: {file_path}",
         'file_cleanup_error': "Error cleaning up file {file_path}: {error}",
         'cleanup_task_error': "Error in cleanup task: {error}",
@@ -405,6 +412,13 @@ TRANSLATIONS = {
         'deleted_message': "🗑️ *Original message has been deleted*",
     },
     'zh': {
+        # 命令描述
+        'welcome_command': '启动机器人',
+        'channels_command': '管理频道和转发',
+        'language_command': '更改语言设置',
+        'help_command': '显示帮助信息',
+
+        # 系统消息
         'file_cleanup_success': "已清理文件：{file_path}",
         'file_cleanup_error': "清理文件 {file_path} 时出错：{error}",
         'cleanup_task_error': "清理任务出错：{error}",

@@ -20,7 +20,7 @@ import logging
 from custom_keyboard import CustomKeyboard
 from typing import Optional, Dict, Any
 from telethon import TelegramClient
-from locales import get_text
+from locales import get_text, TRANSLATIONS
 from telegram.error import BadRequest
 
 # 定义会话状态
@@ -41,15 +41,33 @@ class ChannelManager:
         user_id = update.effective_user.id
         current_lang = self.db.get_user_language(user_id)
 
-        keyboard = [
-            [
-                InlineKeyboardButton("English", callback_data="lang_en"),
-                InlineKeyboardButton("中文", callback_data="lang_zh")
-            ],
-            [InlineKeyboardButton(get_text(current_lang, 'back'), callback_data="channel_management")]
-        ]
+        # 语言显示名称映射
+        language_display_names = {
+            'en': 'English',
+            'zh': '中文',
+            # 添加其他语言的显示名称
+        }
 
-        current_lang_display = "English" if current_lang == "en" else "中文"
+        # 动态生成语言按钮
+        language_buttons = []
+        row = []
+
+        # 每行最多放置2个语言按钮
+        for i, lang_code in enumerate(TRANSLATIONS.keys()):
+            display_name = language_display_names.get(lang_code, lang_code)
+            row.append(InlineKeyboardButton(display_name, callback_data=f"lang_{lang_code}"))
+
+            # 每2个按钮换一行
+            if len(row) == 2 or i == len(TRANSLATIONS.keys()) - 1:
+                language_buttons.append(row)
+                row = []
+
+        # 添加返回按钮
+        language_buttons.append([InlineKeyboardButton(get_text(current_lang, 'back'), callback_data="channel_management")])
+
+        # 获取当前语言的显示名称
+        current_lang_display = language_display_names.get(current_lang, current_lang)
+
         text = (
             f"{get_text(current_lang, 'select_language')}\n"
             f"{get_text(current_lang, 'current_language', language_name=current_lang_display)}"
@@ -58,12 +76,12 @@ class ChannelManager:
         if isinstance(update, Update) and update.callback_query:
             await update.callback_query.message.edit_text(
                 text,
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=InlineKeyboardMarkup(language_buttons)
             )
         else:
             await update.message.reply_text(
                 text,
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=InlineKeyboardMarkup(language_buttons)
             )
 
     async def handle_language_change(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
