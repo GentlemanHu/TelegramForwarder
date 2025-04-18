@@ -52,7 +52,7 @@ class ChannelManager:
         current_lang_display = "English" if current_lang == "en" else "中文"
         text = (
             f"{get_text(current_lang, 'select_language')}\n"
-            f"{get_text(current_lang, 'current_language', lang=current_lang_display)}"
+            f"{get_text(current_lang, 'current_language', language_name=current_lang_display)}"
         )
 
         if isinstance(update, Update) and update.callback_query:
