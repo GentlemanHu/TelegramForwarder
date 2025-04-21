@@ -101,6 +101,7 @@ TRANSLATIONS = {
         'channel_info_error': "❌ Неможливо отримати інформацію про канал.\n1. Правильний ID\n2. Бот в каналі\n3. Ви маєте доступ\n\nСпробуйте знову або /cancel",
         'process_error': "❌ Помилка обробки.\nСпробуйте ще раз або /cancel",
         'operation_cancelled': "❌ Операцію скасовано",
+        'back_to_menu': "Повернутися до меню",
         'no_channels': "Немає доступних каналів.",
         'delete_confirm': "Ви впевнені, що хочете видалити канал?\n\nНазва: {name}\nID: {id}\nТип: {type}",
         'confirm_delete': "✅ Підтвердити видалення",
@@ -296,6 +297,7 @@ TRANSLATIONS = {
         'channel_info_error': "❌ Не удалось получить инфо о канале. Убедитесь:\n1. ID правильный\n2. Бот в канале\n3. У вас есть доступ\n\nПовторите или используйте /cancel",
         'process_error': "❌ Ошибка обработки.\nПовторите или используйте /cancel",
         'operation_cancelled': "❌ Операция отменена",
+        'back_to_menu': "Вернуться в меню",
         'no_channels': "Нет доступных каналов.",
         'delete_confirm': "Удалить канал?\n\nИмя: {name}\nID: {id}\nТип: {type}",
         'confirm_delete': "✅ Подтвердить удаление",
@@ -492,6 +494,7 @@ TRANSLATIONS = {
         'channel_info_error': "❌ Cannot get channel information. Please ensure:\n1. ID format is correct\n2. Bot has joined the channel\n3. You have access to the channel\n\nPlease try again or use /cancel to cancel",
         'process_error': "❌ Error processing input.\nPlease try again or use /cancel to cancel",
         'operation_cancelled': "❌ Operation cancelled",
+        'back_to_menu': "Back to Menu",
         'no_channels': "No channels available.",
         'delete_confirm': "Are you sure you want to delete this channel?\n\nChannel Name: {name}\nChannel ID: {id}\nType: {type}",
         'confirm_delete': "✅ Confirm Delete",
@@ -596,6 +599,7 @@ TRANSLATIONS = {
         'channels_command': '管理频道和转发',
         'language_command': '更改语言设置',
         'help_command': '显示帮助信息',
+        'back_to_menu': '返回主菜单',
 
         # 系统消息
         'file_cleanup_success': "已清理文件：{file_path}",
