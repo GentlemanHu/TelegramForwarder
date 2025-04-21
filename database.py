@@ -74,6 +74,17 @@ class Database:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- 新增媒体类型过滤表
+            CREATE TABLE IF NOT EXISTS media_filters (
+                filter_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT,  -- 格式："monitor_id:forward_id"
+                media_type TEXT CHECK(media_type IN ('photo', 'video', 'audio', 'document', 'animation', 'sticker', 'text')),
+                action TEXT CHECK(action IN ('ALLOW', 'BLOCK')) DEFAULT 'ALLOW',
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
             -- 新增时间段设置表
             CREATE TABLE IF NOT EXISTS time_filters (
                 filter_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +135,15 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_time_filters_active
             ON time_filters(is_active);
+
+            CREATE INDEX IF NOT EXISTS idx_media_filters_pair_id
+            ON media_filters(pair_id);
+
+            CREATE INDEX IF NOT EXISTS idx_media_filters_active
+            ON media_filters(is_active);
+
+            CREATE INDEX IF NOT EXISTS idx_media_filters_type
+            ON media_filters(media_type);
         ''')
         self.conn.commit()
 
@@ -873,6 +893,96 @@ class Database:
             return self.cursor.rowcount > 0
         except Exception as e:
             logging.error(f"删除过滤规则失败: {e}")
+            return False
+
+    # 媒体过滤相关方法
+    def add_media_filter(self, pair_id: str, media_type: str, action: str = 'BLOCK') -> bool:
+        """添加媒体过滤器
+
+        Args:
+            pair_id: 频道配对ID，格式为 "monitor_id:forward_id"
+            media_type: 媒体类型，'photo', 'video', 'audio', 'document', 'animation', 'sticker', 'text'
+            action: 动作，'ALLOW' 或 'BLOCK'
+        """
+        try:
+            # 检查是否已存在相同的过滤器
+            self.cursor.execute(
+                "SELECT filter_id FROM media_filters WHERE pair_id = ? AND media_type = ? AND is_active = 1",
+                (pair_id, media_type)
+            )
+            existing = self.cursor.fetchone()
+
+            if existing:
+                # 如果已存在，更新动作
+                self.cursor.execute(
+                    "UPDATE media_filters SET action = ?, updated_at = CURRENT_TIMESTAMP WHERE filter_id = ?",
+                    (action, existing[0])
+                )
+            else:
+                # 如果不存在，新增
+                self.cursor.execute(
+                    "INSERT INTO media_filters (pair_id, media_type, action) VALUES (?, ?, ?)",
+                    (pair_id, media_type, action)
+                )
+
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logging.error(f"Error adding media filter: {e}")
+            return False
+
+    def get_media_filters(self, pair_id: str = None, monitor_id: int = None, forward_id: int = None) -> List[Dict]:
+        """获取指定频道配对的媒体过滤器
+
+        可以使用pair_id或者monitor_id+forward_id的组合来查询
+        """
+        try:
+            # 如果提供了monitor_id和forward_id，生成pair_id
+            if pair_id is None and monitor_id is not None and forward_id is not None:
+                pair_id = f"{monitor_id}:{forward_id}"
+
+            if pair_id is None:
+                logging.error("get_media_filters: 需要提供pair_id或者monitor_id+forward_id")
+                return []
+
+            self.cursor.execute(
+                "SELECT * FROM media_filters WHERE pair_id = ? AND is_active = 1",
+                (pair_id,)
+            )
+            filters = self.cursor.fetchall()
+            result = []
+            for filter_rule in filters:
+                result.append({
+                    'filter_id': filter_rule[0],
+                    'pair_id': filter_rule[1],
+                    'media_type': filter_rule[2],
+                    'action': filter_rule[3],
+                    'is_active': filter_rule[4],
+                    'created_at': filter_rule[5],
+                    'updated_at': filter_rule[6]
+                })
+            return result
+        except Exception as e:
+            logging.error(f"Error getting media filters: {e}")
+            return []
+
+    def delete_media_filter(self, filter_id: int) -> bool:
+        """删除媒体过滤器"""
+        try:
+            self.cursor.execute("UPDATE media_filters SET is_active = 0 WHERE filter_id = ?", (filter_id,))
+            self.conn.commit()
+            return self.cursor.rowcount > 0
+        except Exception as e:
+            logging.error(f"Error deleting media filter: {e}")
+            return False
+
+    def add_media_filter_by_ids(self, monitor_id: int, forward_id: int, media_type: str, action: str = 'BLOCK') -> bool:
+        """通过频道ID添加媒体过滤器"""
+        try:
+            pair_id = f"{monitor_id}:{forward_id}"
+            return self.add_media_filter(pair_id, media_type, action)
+        except Exception as e:
+            logging.error(f"Error adding media filter by IDs: {e}")
             return False
 
     # 时间段设置相关方法

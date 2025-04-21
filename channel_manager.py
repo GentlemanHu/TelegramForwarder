@@ -205,6 +205,12 @@ self.handle_confirm_remove_pair,
             CallbackQueryHandler(self.handle_filter_mode_selection, pattern='^filter_mode_'),
             CallbackQueryHandler(self.handle_delete_filter_rule, pattern='^delete_filter_rule_'),
 
+            # 媒体过滤器相关回调
+            CallbackQueryHandler(self.show_media_filter_menu, pattern='^media_filter$'),
+            CallbackQueryHandler(self.show_pair_selection_for_media, pattern='^add_media_filter(_\d+)?$'),
+            CallbackQueryHandler(self.show_media_filter_settings, pattern='^media_filter_pair_'),
+            CallbackQueryHandler(self.toggle_media_filter, pattern='^toggle_media_'),
+
             # 时间过滤处理
             CallbackQueryHandler(self.handle_time_pair_selection, pattern='^time_pair_'),
             CallbackQueryHandler(self.handle_time_mode_selection, pattern='^time_mode_'),
@@ -1348,6 +1354,7 @@ self.handle_confirm_remove_pair,
         keyboard = [
             [InlineKeyboardButton(get_text(lang, 'add_filter_rule'), callback_data="add_filter_rule")],
             [InlineKeyboardButton(get_text(lang, 'list_filter_rules'), callback_data="list_filter_rules")],
+            [InlineKeyboardButton(get_text(lang, 'media_filter'), callback_data="media_filter")],
             [InlineKeyboardButton(get_text(lang, 'back'), callback_data="channel_management")]
         ]
 
@@ -1383,6 +1390,16 @@ self.handle_confirm_remove_pair,
         user_id = update.effective_user.id
         lang = self.db.get_user_language(user_id)
 
+        # 获取页码
+        page = 1
+        if query.data and '_' in query.data:
+            try:
+                parts = query.data.split('_')
+                if len(parts) > 1 and parts[-1].isdigit():
+                    page = int(parts[-1])
+            except ValueError:
+                page = 1
+
         # 获取所有频道配对
         pairs = self.db.get_all_channel_pairs()
 
@@ -1395,17 +1412,46 @@ self.handle_confirm_remove_pair,
             )
             return
 
+        # 每页显示的配对数
+        per_page = 5
+        total_pages = (len(pairs) + per_page - 1) // per_page
+        page = max(1, min(page, total_pages))
+
+        # 获取当前页的配对
+        start_idx = (page - 1) * per_page
+        end_idx = min(start_idx + per_page, len(pairs))
+        current_pairs = pairs[start_idx:end_idx]
+
         keyboard = []
-        for pair in pairs:
+        for pair in current_pairs:
             keyboard.append([InlineKeyboardButton(
                 f"{pair['monitor_name']} → {pair['forward_name']}",
                 callback_data=f"filter_pair_{pair['pair_id']}"
             )])
 
+        # 构建分页按钮
+        navigation = []
+        if page > 1:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'previous_page'),
+                callback_data=f"add_filter_rule_{page-1}"
+            ))
+        if page < total_pages:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'next_page'),
+                callback_data=f"add_filter_rule_{page+1}"
+            ))
+
+        if navigation:
+            keyboard.append(navigation)
+
         keyboard.append([InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")])
 
+        # 添加当前页码信息
+        page_info = f"\n{get_text(lang, 'page_info').format(current=page, total=total_pages)}"
+
         await query.message.edit_text(
-            get_text(lang, 'select_pair_for_filter'),
+            get_text(lang, 'select_pair_for_filter') + page_info,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -1416,6 +1462,16 @@ self.handle_confirm_remove_pair,
 
         user_id = update.effective_user.id
         lang = self.db.get_user_language(user_id)
+
+        # 获取页码
+        page = 1
+        if query.data and '_' in query.data:
+            try:
+                parts = query.data.split('_')
+                if len(parts) > 1 and parts[-1].isdigit():
+                    page = int(parts[-1])
+            except ValueError:
+                page = 1
 
         # 获取所有频道配对
         pairs = self.db.get_all_channel_pairs()
@@ -1429,17 +1485,46 @@ self.handle_confirm_remove_pair,
             )
             return
 
+        # 每页显示的配对数
+        per_page = 5
+        total_pages = (len(pairs) + per_page - 1) // per_page
+        page = max(1, min(page, total_pages))
+
+        # 获取当前页的配对
+        start_idx = (page - 1) * per_page
+        end_idx = min(start_idx + per_page, len(pairs))
+        current_pairs = pairs[start_idx:end_idx]
+
         keyboard = []
-        for pair in pairs:
+        for pair in current_pairs:
             keyboard.append([InlineKeyboardButton(
                 f"{pair['monitor_name']} → {pair['forward_name']}",
                 callback_data=f"time_pair_{pair['pair_id']}"
             )])
 
+        # 构建分页按钮
+        navigation = []
+        if page > 1:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'previous_page'),
+                callback_data=f"add_time_filter_{page-1}"
+            ))
+        if page < total_pages:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'next_page'),
+                callback_data=f"add_time_filter_{page+1}"
+            ))
+
+        if navigation:
+            keyboard.append(navigation)
+
         keyboard.append([InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")])
 
+        # 添加当前页码信息
+        page_info = f"\n{get_text(lang, 'page_info').format(current=page, total=total_pages)}"
+
         await query.message.edit_text(
-            get_text(lang, 'select_pair_for_time'),
+            get_text(lang, 'select_pair_for_time') + page_info,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -2183,3 +2268,209 @@ self.handle_confirm_remove_pair,
             return True
         except Exception:
             return False
+
+    # 媒体过滤器相关方法
+    async def show_media_filter_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """显示媒体过滤器菜单"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        keyboard = [
+            [InlineKeyboardButton(get_text(lang, 'add_media_filter'), callback_data="add_media_filter")],
+            [InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")]
+        ]
+
+        await query.message.edit_text(
+            get_text(lang, 'media_filter_menu'),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def show_pair_selection_for_media(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """显示频道配对选择界面，用于媒体过滤器"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取页码
+        page = 1
+        if query.data and '_' in query.data:
+            try:
+                parts = query.data.split('_')
+                if len(parts) > 1 and parts[-1].isdigit():
+                    page = int(parts[-1])
+            except ValueError:
+                page = 1
+
+        # 获取所有频道配对
+        pairs = self.db.get_all_channel_pairs()
+
+        if not pairs:
+            await query.message.edit_text(
+                get_text(lang, 'no_pairs'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="media_filter")
+                ]])
+            )
+            return
+
+        # 每页显示的配对数
+        per_page = 5
+        total_pages = (len(pairs) + per_page - 1) // per_page
+        page = max(1, min(page, total_pages))
+
+        # 获取当前页的配对
+        start_idx = (page - 1) * per_page
+        end_idx = min(start_idx + per_page, len(pairs))
+        current_pairs = pairs[start_idx:end_idx]
+
+        keyboard = []
+        for pair in current_pairs:
+            keyboard.append([InlineKeyboardButton(
+                f"{pair['monitor_name']} → {pair['forward_name']}",
+                callback_data=f"media_filter_pair_{pair['pair_id']}"
+            )])
+
+        # 构建分页按钮
+        navigation = []
+        if page > 1:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'previous_page'),
+                callback_data=f"add_media_filter_{page-1}"
+            ))
+        if page < total_pages:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'next_page'),
+                callback_data=f"add_media_filter_{page+1}"
+            ))
+
+        if navigation:
+            keyboard.append(navigation)
+
+        keyboard.append([InlineKeyboardButton(get_text(lang, 'back'), callback_data="media_filter")])
+
+        # 添加当前页码信息
+        page_info = f"\n{get_text(lang, 'page_info').format(current=page, total=total_pages)}"
+
+        await query.message.edit_text(
+            get_text(lang, 'select_pair_for_media') + page_info,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def show_media_filter_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """显示媒体过滤器设置界面"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取配对ID
+        pair_id = query.data.split('_')[-1]
+        monitor_id, forward_id = map(int, pair_id.split(':'))
+
+        # 获取频道信息
+        monitor_info = self.db.get_channel_info(monitor_id)
+        forward_info = self.db.get_channel_info(forward_id)
+
+        if not monitor_info or not forward_info:
+            await query.message.edit_text(
+                get_text(lang, 'pair_not_found'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="add_media_filter")
+                ]])
+            )
+            return
+
+        # 获取当前媒体过滤器设置
+        media_filters = self.db.get_media_filters(pair_id)
+
+        # 将过滤器转换为字典，便于查找
+        filter_dict = {}
+        for filter_rule in media_filters:
+            filter_dict[filter_rule['media_type']] = filter_rule['action']
+
+        # 定义所有支持的媒体类型
+        media_types = [
+            {'id': 'photo', 'name': get_text(lang, 'media_photo')},
+            {'id': 'video', 'name': get_text(lang, 'media_video')},
+            {'id': 'audio', 'name': get_text(lang, 'media_audio')},
+            {'id': 'document', 'name': get_text(lang, 'media_document')},
+            {'id': 'animation', 'name': get_text(lang, 'media_animation')},
+            {'id': 'sticker', 'name': get_text(lang, 'media_sticker')},
+            {'id': 'text', 'name': get_text(lang, 'media_text')}
+        ]
+
+        # 构建开关按钮
+        keyboard = []
+        for media_type in media_types:
+            type_id = media_type['id']
+            type_name = media_type['name']
+
+            # 获取当前状态
+            current_action = filter_dict.get(type_id, 'ALLOW')
+
+            # 根据当前状态设置按钮文本和图标
+            if current_action == 'ALLOW':
+                status_text = f"✅ {type_name}"
+                toggle_action = 'BLOCK'
+            else:  # BLOCK
+                status_text = f"❌ {type_name}"
+                toggle_action = 'ALLOW'
+
+            keyboard.append([InlineKeyboardButton(
+                status_text,
+                callback_data=f"toggle_media_{type_id}_{pair_id}_{toggle_action}"
+            )])
+
+        keyboard.append([InlineKeyboardButton(get_text(lang, 'back'), callback_data="add_media_filter")])
+
+        # 显示配对信息和当前设置
+        await query.message.edit_text(
+            get_text(lang, 'media_filter_settings',
+                    monitor_name=monitor_info['channel_name'],
+                    forward_name=forward_info['channel_name']),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def toggle_media_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """切换媒体过滤器状态"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        try:
+            # 解析回调数据
+            parts = query.data.split('_')
+            media_type = parts[2]
+            pair_id = parts[3]
+            action = parts[4]  # ALLOW 或 BLOCK
+
+            # 更新数据库
+            success = self.db.add_media_filter(pair_id, media_type, action)
+
+            if success:
+                # 重新显示设置页面
+                await self.show_media_filter_settings(update, context)
+            else:
+                await query.message.edit_text(
+                    get_text(lang, 'media_filter_update_failed'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"media_filter_pair_{pair_id}")
+                    ]])
+                )
+
+        except Exception as e:
+            logging.error(f"Error in toggle_media_filter: {e}")
+            await query.message.edit_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="media_filter")
+                ]])
+            )

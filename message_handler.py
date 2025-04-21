@@ -171,6 +171,12 @@ class MyMessageHandler:
             elif getattr(message, 'caption', None):
                 content = message.caption
 
+            # 获取媒体类型
+            media_type = 'text'  # 默认为文本
+            if getattr(message, 'media', None):
+                media_type = self.get_media_type(message)
+                logging.info(f"检测到媒体类型: {media_type}")
+
             # 获取当前时间
             current_time = datetime.now()
             current_time_str = current_time.strftime('%H:%M')
@@ -187,8 +193,20 @@ class MyMessageHandler:
                         continue
 
                     # 检查内容过滤
-                    if content and not self.check_content_filter(monitor_id, forward_id, content):
-                        logging.info(f"消息被内容过滤器拦截: 监控频道={monitor_id}, 转发频道={forward_id}")
+                    if content:
+                        logging.info(f"开始检查内容过滤器: 监控频道={monitor_id}, 转发频道={forward_id}")
+                        content_preview = content[:100] + "..." if len(content) > 100 else content
+                        logging.info(f"消息内容预览: '{content_preview}'")
+
+                        if not self.check_content_filter(monitor_id, forward_id, content):
+                            logging.info(f"消息被内容过滤器拦截: 监控频道={monitor_id}, 转发频道={forward_id}")
+                            continue
+                        else:
+                            logging.info(f"消息通过内容过滤器: 监控频道={monitor_id}, 转发频道={forward_id}")
+
+                    # 检查媒体类型过滤
+                    if not self.check_media_filter(monitor_id, forward_id, media_type):
+                        logging.info(f"消息被媒体类型过滤器拦截: 监控频道={monitor_id}, 转发频道={forward_id}, 媒体类型={media_type}")
                         continue
 
                     # 通过所有过滤器，转发消息
@@ -247,9 +265,11 @@ class MyMessageHandler:
         try:
             # 获取过滤规则
             filter_rules = self.db.get_filter_rules(monitor_id, forward_id)
+            logging.info(f"获取到过滤规则: {len(filter_rules)} 条")
 
             # 如果没有规则，允许所有内容
             if not filter_rules:
+                logging.info("没有过滤规则，允许所有内容")
                 return True
 
             # 分类规则
@@ -262,27 +282,66 @@ class MyMessageHandler:
                 elif rule.get('rule_type') == 'BLACKLIST':
                     blacklist_rules.append(rule)
 
+            logging.info(f"白名单规则: {len(whitelist_rules)} 条, 黑名单规则: {len(blacklist_rules)} 条")
+
             # 如果有白名单规则，必须匹配至少一条才允许
             if whitelist_rules:
                 whitelist_match = False
                 for rule in whitelist_rules:
+                    logging.info(f"检查白名单规则: {rule.get('pattern')}")
                     if self.match_rule(rule, content):
                         whitelist_match = True
+                        logging.info(f"白名单规则匹配成功: {rule.get('pattern')}")
                         break
 
                 if not whitelist_match:
+                    logging.info("没有匹配任何白名单规则，拦截消息")
                     return False
 
             # 如果有黑名单规则，匹配任一条则拒绝
             for rule in blacklist_rules:
+                logging.info(f"检查黑名单规则: {rule.get('pattern')}")
                 if self.match_rule(rule, content):
+                    logging.info(f"黑名单规则匹配成功: {rule.get('pattern')}，拦截消息")
                     return False
 
             # 通过所有过滤
+            logging.info("消息通过所有内容过滤器")
             return True
 
         except Exception as e:
             logging.error(f"检查内容过滤器时出错: {e}")
+            logging.error(f"错误详情: {traceback.format_exc()}")
+            # 出错时默认允许
+            return True
+
+    def check_media_filter(self, monitor_id: int, forward_id: int, media_type: str) -> bool:
+        """检查媒体类型过滤器"""
+        try:
+            # 获取媒体过滤规则
+            media_filters = self.db.get_media_filters(monitor_id, forward_id)
+
+            # 如果没有规则，允许所有媒体类型
+            if not media_filters:
+                return True
+
+            # 检查是否有匹配当前媒体类型的规则
+            for filter_rule in media_filters:
+                if filter_rule.get('media_type') == media_type:
+                    action = filter_rule.get('action', 'ALLOW')
+                    logging.info(f"找到媒体类型过滤规则: {media_type}, 动作: {action}")
+                    # 如果动作是拦截，返回False
+                    if action == 'BLOCK':
+                        return False
+                    # 如果动作是允许，返回True
+                    elif action == 'ALLOW':
+                        return True
+
+            # 如果没有匹配的规则，默认允许
+            return True
+
+        except Exception as e:
+            logging.error(f"检查媒体类型过滤器时出错: {e}")
             # 出错时默认允许
             return True
 
@@ -291,21 +350,48 @@ class MyMessageHandler:
         try:
             pattern = rule.get('pattern', '')
             if not pattern:
+                logging.info("规则模式为空，跳过")
                 return False
 
             filter_mode = rule.get('filter_mode', 'KEYWORD')
+            rule_type = rule.get('rule_type', '')
+            logging.info(f"开始匹配规则: 类型={rule_type}, 模式={filter_mode}, 内容='{pattern}'")
 
             if filter_mode == 'KEYWORD':
-                # 关键词模式，简单字符串包含
-                return pattern.lower() in content.lower()
+                # 关键词模式，将整个关键词作为一个整体进行匹配
+                pattern_lower = pattern.lower()
+                content_lower = content.lower()
+
+                # 记录内容的一部分用于调试
+                content_preview = content_lower[:100] + "..." if len(content_lower) > 100 else content_lower
+                logging.info(f"内容预览: '{content_preview}'")
+
+                # 直接检查内容是否包含关键词
+                match_result = pattern_lower in content_lower
+                if match_result:
+                    logging.info(f"关键词匹配成功: '{pattern}' 在消息中被找到")
+                else:
+                    logging.info(f"关键词匹配失败: '{pattern}' 不在消息中")
+                return match_result
             elif filter_mode == 'REGEX':
                 # 正则表达式模式
-                return bool(re.search(pattern, content, re.IGNORECASE))
+                try:
+                    match_result = bool(re.search(pattern, content, re.IGNORECASE))
+                    if match_result:
+                        logging.info(f"正则表达式匹配成功: '{pattern}'")
+                    else:
+                        logging.info(f"正则表达式匹配失败: '{pattern}'")
+                    return match_result
+                except re.error as regex_error:
+                    logging.error(f"正则表达式错误: {regex_error}, 模式: '{pattern}'")
+                    return False
 
+            logging.info(f"未知的过滤模式: {filter_mode}")
             return False
 
         except Exception as e:
             logging.error(f"匹配规则时出错: {e}")
+            logging.error(f"错误详情: {traceback.format_exc()}")
             return False
 
     async def handle_media_send(self, message, channel_id, media_type: str = None, reply_to_message_id: int = None, from_chat = None):
