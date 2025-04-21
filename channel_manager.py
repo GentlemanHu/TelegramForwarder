@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 import logging
 import datetime
+import traceback
 from custom_keyboard import CustomKeyboard
 from typing import Optional, Dict, Any
 from telethon import TelegramClient
@@ -127,17 +128,19 @@ class ChannelManager:
                     ],
                     WAITING_FOR_FORWARD: [
                         MessageHandler(
-                            filters.ALL & ~filters.COMMAND,  # 捕获所有非命令消息
+                            filters.ALL & ~filters.COMMAND & ~filters.Regex('^(cancel|Cancel|取消)$'),  # 捕获所有非命令非取消消息
                             self.handle_forwarded_message
                         ),
                         MessageHandler(filters.Regex('^(cancel|Cancel|取消)$'), self.cancel_add_channel),
+                        CommandHandler('cancel', self.cancel_add_channel),
                     ],
                     WAITING_FOR_MANUAL_INPUT: [
                         MessageHandler(
-                            filters.TEXT & ~filters.COMMAND,
+                            filters.TEXT & ~filters.COMMAND & ~filters.Regex('^(cancel|Cancel|取消)$'),
                             self.handle_manual_input
                         ),
                         MessageHandler(filters.Regex('^(cancel|Cancel|取消)$'), self.cancel_add_channel),
+                        CommandHandler('cancel', self.cancel_add_channel),
                     ]
 
                 },
@@ -369,12 +372,18 @@ self.handle_confirm_remove_pair,
             user_id = update.effective_user.id
             lang = self.db.get_user_language(user_id)
 
+            # 记录消息类型和属性，用于调试
+            logging.info(f"收到消息类型: {type(message).__name__}")
+            logging.info(f"消息属性: {dir(message)}")
+
             if message.text and message.text.lower() in ['cancel', '取消']:
                 await message.reply_text(
                     get_text(lang, 'operation_cancelled'),
                     reply_markup=ReplyKeyboardRemove()
                 )
                 context.user_data.clear()
+                # 返回到频道管理菜单
+                await self.show_channel_management(update, context)
                 return ConversationHandler.END
 
             await message.reply_text(
@@ -387,42 +396,71 @@ self.handle_confirm_remove_pair,
             chat_username = None
 
             # 处理用户分享
-            if message.users_shared:
+            if hasattr(message, 'users_shared') and message.users_shared:
                 users = message.users_shared.users
                 if users:
                     user = users[0]
                     chat_id = user.id
                     chat_title = user.first_name or "Unknown User"
                     chat_username = user.username
+                    logging.info(f"处理用户分享: ID={chat_id}, 名称={chat_title}")
 
             # 处理聊天分享
-            elif message.chat_shared:
+            elif hasattr(message, 'chat_shared') and message.chat_shared:
                 raw_chat_id = message.chat_shared.chat_id
                 # 将ID统一格式化
                 chat_id = self.normalize_channel_id(raw_chat_id)
+                logging.info(f"处理聊天分享: 原始ID={raw_chat_id}, 标准化ID={chat_id}")
                 try:
                     entity = await self.client.get_entity(int(f"-100{chat_id}"))
                     chat_title = getattr(entity, 'title', None) or getattr(entity, 'first_name', 'Unknown')
                     chat_username = getattr(entity, 'username', None)
+                    logging.info(f"获取到实体信息: 标题={chat_title}, 用户名={chat_username}")
                 except Exception as e:
-                    logging.error(f"Error getting entity info: {e}")
+                    logging.error(f"获取实体信息时出错: {e}")
                     raise
 
             # 处理转发的频道/群组消息
-            elif message.forward_from_chat:
+            elif hasattr(message, 'forward_from_chat') and message.forward_from_chat:
                 chat = message.forward_from_chat
                 chat_id = self.normalize_channel_id(chat.id)
                 chat_title = chat.title
                 chat_username = chat.username
+                logging.info(f"处理转发的频道/群组消息: ID={chat_id}, 标题={chat_title}")
 
             # 处理转发的用户消息
-            elif message.forward_from:
+            elif hasattr(message, 'forward_from') and message.forward_from:
                 user = message.forward_from
                 chat_id = user.id
                 chat_title = user.first_name or "Unknown User"
                 chat_username = user.username
+                logging.info(f"处理转发的用户消息: ID={chat_id}, 名称={chat_title}")
+
+            # 处理普通消息（可能是用户直接输入的ID或其他内容）
+            elif message.text and message.text.strip():
+                try:
+                    # 尝试将文本解析为频道ID
+                    input_text = message.text.strip()
+                    logging.info(f"尝试将文本解析为频道ID: {input_text}")
+
+                    # 统一处理ID格式
+                    channel_id = self.normalize_channel_id(input_text)
+                    logging.info(f"标准化后的ID: {channel_id}")
+
+                    # 使用标准格式获取频道信息
+                    full_id = int(f"-100{channel_id}")
+                    entity = await self.client.get_entity(full_id)
+
+                    chat_id = channel_id
+                    chat_title = getattr(entity, 'title', None) or getattr(entity, 'first_name', 'Unknown')
+                    chat_username = getattr(entity, 'username', None)
+                    logging.info(f"成功解析为频道: ID={chat_id}, 标题={chat_title}")
+                except Exception as e:
+                    logging.error(f"解析文本为频道ID时出错: {e}")
+                    # 不抛出异常，继续检查其他可能性
 
             if not chat_id:
+                logging.warning("未能获取到有效的聊天ID")
                 await message.reply_text(
                     get_text(lang, 'invalid_forward'),
                     reply_markup=ReplyKeyboardRemove()
@@ -431,6 +469,7 @@ self.handle_confirm_remove_pair,
 
             # 添加到数据库
             channel_type = context.user_data.get('channel_type', 'MONITOR')
+            logging.info(f"准备添加频道: ID={chat_id}, 名称={chat_title}, 类型={channel_type}")
             success = self.db.add_channel(
                 channel_id=chat_id,  # 使用标准化的ID
                 channel_name=chat_title or "Unknown",
@@ -450,21 +489,31 @@ self.handle_confirm_remove_pair,
                             type=channel_type_display),
                     reply_markup=ReplyKeyboardRemove()
                 )
+                logging.info(f"成功添加频道: {chat_title} (ID: {chat_id})")
             else:
                 await message.reply_text(
                     get_text(lang, 'channel_add_failed'),
                     reply_markup=ReplyKeyboardRemove()
                 )
+                logging.warning(f"添加频道失败: {chat_title} (ID: {chat_id})")
 
             context.user_data.clear()
+            # 返回到频道管理菜单
+            await self.show_channel_management(update, context)
             return ConversationHandler.END
 
         except Exception as e:
-            logging.error(f"Error in handle_forwarded_message: {e}")
-            await message.reply_text(
-                get_text(lang, 'process_error'),
-                reply_markup=ReplyKeyboardRemove()
-            )
+            logging.error(f"处理转发消息时出错: {e}")
+            logging.error(f"错误详情: {traceback.format_exc()}")
+            try:
+                await message.reply_text(
+                    get_text(lang, 'process_error'),
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # 返回到频道管理菜单
+                await self.show_channel_management(update, context)
+            except Exception as reply_error:
+                logging.error(f"发送错误消息时出错: {reply_error}")
             return ConversationHandler.END
 
     async def handle_manual_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -612,27 +661,57 @@ self.handle_confirm_remove_pair,
         user_id = update.effective_user.id
         lang = self.db.get_user_language(user_id)
 
-        # 移除自定义键盘
-        if context.user_data.get('awaiting_share'):
-            if update.callback_query:
-                await update.callback_query.message.reply_text(
-                    get_text(lang, 'operation_cancelled'),
-                    reply_markup=CustomKeyboard.remove_keyboard()
-                )
+        try:
+            # 移除自定义键盘
+            if context.user_data.get('awaiting_share'):
+                if update.callback_query:
+                    await update.callback_query.message.reply_text(
+                        get_text(lang, 'operation_cancelled'),
+                        reply_markup=CustomKeyboard.remove_keyboard()
+                    )
+                else:
+                    await update.message.reply_text(
+                        get_text(lang, 'operation_cancelled'),
+                        reply_markup=CustomKeyboard.remove_keyboard()
+                    )
             else:
-                await update.message.reply_text(
-                    get_text(lang, 'operation_cancelled'),
-                    reply_markup=CustomKeyboard.remove_keyboard()
-                )
-        else:
-            if update.callback_query:
-                await update.callback_query.message.edit_text(get_text(lang, 'operation_cancelled'))
-            else:
-                await update.message.reply_text(get_text(lang, 'operation_cancelled'))
+                if update.callback_query:
+                    await update.callback_query.message.edit_text(get_text(lang, 'operation_cancelled'))
+                else:
+                    await update.message.reply_text(get_text(lang, 'operation_cancelled'))
 
-        # 清理状态
-        context.user_data.clear()
-        return ConversationHandler.END
+            # 清理状态
+            context.user_data.clear()
+
+            # 返回到频道管理菜单
+            await self.show_channel_management(update, context)
+            return ConversationHandler.END
+
+        except Exception as e:
+            logging.error(f"取消添加频道时出错: {e}")
+            logging.error(f"错误详情: {traceback.format_exc()}")
+            try:
+                if update.message:
+                    await update.message.reply_text(
+                        get_text(lang, 'error_occurred'),
+                        reply_markup=CustomKeyboard.remove_keyboard()
+                    )
+                elif update.callback_query:
+                    await update.callback_query.message.reply_text(
+                        get_text(lang, 'error_occurred'),
+                        reply_markup=CustomKeyboard.remove_keyboard()
+                    )
+            except Exception as reply_error:
+                logging.error(f"发送错误消息时出错: {reply_error}")
+
+            # 清理状态
+            context.user_data.clear()
+            # 返回到频道管理菜单
+            try:
+                await self.show_channel_management(update, context)
+            except Exception as menu_error:
+                logging.error(f"显示频道管理菜单时出错: {menu_error}")
+            return ConversationHandler.END
 
     async def show_remove_channel_options(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """显示可删除的频道列表"""

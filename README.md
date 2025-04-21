@@ -26,9 +26,15 @@ TelegramForwarder is a powerful and user-friendly Telegram bot designed for auto
 - 📢 Forward to multiple target channels
 - 📋 Channel pairing management
 - 🖼️ Support for all media types (photos, videos, documents)
+- 🔍 Content filtering with keyword and regex support
+- ⏰ Time-based filtering for scheduled forwarding
+- 📊 Media type filtering (photos, videos, audio, documents, etc.)
+- 🌐 Multi-language support (English, Chinese, Russian, Ukrainian)
 - 💾 SQLite database for persistent storage
 - 🔒 Owner-only access control
 - ⚡ Asynchronous processing for better performance
+
+> **Note:** Some features like time-based filtering and media type filtering have not been fully tested yet.
 
 ## 📂 Directory Structure
 
@@ -75,6 +81,30 @@ cp .env.example .env
 python main.py
 ```
 
+## 🔍 Filtering Features
+
+TelegramForwarder offers powerful filtering capabilities to control which messages are forwarded:
+
+### Content Filtering
+
+- **Keyword Filtering**: Forward or block messages containing specific keywords
+- **Regex Filtering**: Use regular expressions for advanced pattern matching
+- **Whitelist/Blacklist Mode**: Choose whether to allow only matching messages or block matching messages
+
+### Time-Based Filtering
+
+- **Time Range**: Set specific time periods when messages should be forwarded
+- **Day of Week**: Configure different forwarding schedules for different days
+- **Allow/Block Mode**: Choose to either allow forwarding only during specified times or block forwarding during those times
+
+### Media Type Filtering
+
+- **Selective Media Forwarding**: Choose which types of media to forward (photos, videos, audio, documents, animations, stickers)
+- **Text-Only Option**: Option to forward or block text-only messages
+- **Per-Channel Pair Settings**: Configure different media filters for each source-destination channel pair
+
+> **Note:** Time-based filtering and media type filtering features have not been fully tested yet.
+
 ## 🎁 Support the Project
 
 If you find this project helpful, please consider supporting its development:
@@ -120,9 +150,15 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 📢 支持转发到多个目标频道
 - 📋 频道配对管理
 - 🖼️ 支持所有媒体类型（图片、视频、文档）
+- 🔍 内容过滤支持关键词和正则表达式
+- ⏰ 基于时间的过滤功能，实现定时转发
+- 📊 媒体类型过滤（图片、视频、音频、文档等）
+- 🌐 多语言支持（英文、中文、俄文、乌克兰文）
 - 💾 使用 SQLite 数据库持久化存储
 - 🔒 仅限所有者访问控制
 - ⚡ 异步处理提升性能
+
+> **注意：** 部分功能如基于时间的过滤和媒体类型过滤尚未完全测试。
 
 ## 📂 目录结构
 
@@ -168,6 +204,30 @@ cp .env.example .env
 ```bash
 python main.py
 ```
+
+## 🔍 过滤功能
+
+TelegramForwarder 提供了强大的过滤功能，可以控制转发哪些消息：
+
+### 内容过滤
+
+- **关键词过滤**：转发或拦截包含特定关键词的消息
+- **正则表达式过滤**：使用正则表达式进行高级模式匹配
+- **白名单/黑名单模式**：选择是只允许匹配的消息还是拦截匹配的消息
+
+### 基于时间的过滤
+
+- **时间范围**：设置应该转发消息的特定时间段
+- **星期设置**：为不同的星期配置不同的转发计划
+- **允许/拦截模式**：选择仅在指定时间内允许转发或在这些时间内拦截转发
+
+### 媒体类型过滤
+
+- **选择性媒体转发**：选择要转发的媒体类型（照片、视频、音频、文档、动画、贴纸）
+- **纯文本选项**：选择转发或拦截纯文本消息
+- **每对频道设置**：为每个源目标频道对配置不同的媒体过滤器
+
+> **注意：** 基于时间的过滤和媒体类型过滤功能尚未完全测试。
 
 ## 🎁 支持项目
 
