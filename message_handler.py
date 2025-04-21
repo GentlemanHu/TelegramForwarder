@@ -111,6 +111,35 @@ class MyMessageHandler:
                         return 'sticker'
                     elif hasattr(attr, '__class__') and 'DocumentAttributeSticker' in str(attr.__class__):
                         return 'sticker'
+                    # 检查是否是视频
+                    elif hasattr(attr, 'CONSTRUCTOR_ID') and attr.CONSTRUCTOR_ID == 0x0ef02ce6:  # DocumentAttributeVideo
+                        return 'video'
+                    elif hasattr(attr, '__class__') and 'DocumentAttributeVideo' in str(attr.__class__):
+                        return 'video'
+                    # 检查是否是音频
+                    elif hasattr(attr, 'CONSTRUCTOR_ID') and attr.CONSTRUCTOR_ID == 0x9852f9c6:  # DocumentAttributeAudio
+                        return 'audio'
+                    elif hasattr(attr, '__class__') and 'DocumentAttributeAudio' in str(attr.__class__):
+                        return 'audio'
+                    # 检查是否是动画
+                    elif hasattr(attr, 'CONSTRUCTOR_ID') and attr.CONSTRUCTOR_ID == 0x0051792c:  # DocumentAttributeAnimated
+                        return 'animation'
+                    elif hasattr(attr, '__class__') and 'DocumentAttributeAnimated' in str(attr.__class__):
+                        return 'animation'
+
+            # 检查MIME类型
+            if hasattr(message.media.document, 'mime_type'):
+                mime_type = message.media.document.mime_type
+                if mime_type:
+                    if mime_type.startswith('video/'):
+                        return 'video'
+                    elif mime_type.startswith('audio/'):
+                        return 'audio'
+                    elif mime_type.startswith('image/'):
+                        if mime_type == 'image/gif':
+                            return 'animation'
+                        return 'photo'
+
             return 'document'
         elif hasattr(message.media, 'video'):
             return 'video'
@@ -343,7 +372,34 @@ class MyMessageHandler:
                         # 清理缩略图
                         if 'thumb_path' in media_info and os.path.exists(media_info['thumb_path']):
                             os.remove(media_info['thumb_path'])
+                    elif media_type == 'audio':
+                        send_kwargs.update({
+                            'audio': file_data
+                        })
 
+                        # 添加音频参数
+                        if 'duration' in media_info:
+                            send_kwargs['duration'] = media_info['duration']
+                        if 'performer' in media_info:
+                            send_kwargs['performer'] = media_info['performer']
+                        if 'title' in media_info:
+                            send_kwargs['title'] = media_info['title']
+
+                        await self.bot.send_audio(**send_kwargs)
+                    elif media_type == 'animation':
+                        send_kwargs.update({
+                            'animation': file_data
+                        })
+
+                        # 添加动画参数
+                        if 'width' in media_info:
+                            send_kwargs['width'] = media_info['width']
+                        if 'height' in media_info:
+                            send_kwargs['height'] = media_info['height']
+                        if 'duration' in media_info:
+                            send_kwargs['duration'] = media_info['duration']
+
+                        await self.bot.send_animation(**send_kwargs)
                     elif media_type == 'document':
                         send_kwargs['document'] = file_data
                         if 'filename' in media_info:
@@ -880,22 +936,60 @@ class MyMessageHandler:
             }
 
             # 收集特定媒体类型的额外信息
-            if media_type == 'video' and hasattr(message.media, 'video'):
-                video = message.media.video
-                if hasattr(video, 'width'):
-                    media_info['width'] = video.width
-                if hasattr(video, 'height'):
-                    media_info['height'] = video.height
-                if hasattr(video, 'duration'):
-                    media_info['duration'] = video.duration
+            if media_type == 'video' and hasattr(message.media, 'document'):
+                # 从属性中获取视频信息
+                if hasattr(message.media.document, 'attributes'):
+                    for attr in message.media.document.attributes:
+                        if hasattr(attr, 'w'):
+                            media_info['width'] = attr.w
+                        if hasattr(attr, 'h'):
+                            media_info['height'] = attr.h
+                        if hasattr(attr, 'duration'):
+                            media_info['duration'] = attr.duration
+                        if hasattr(attr, 'file_name'):
+                            media_info['filename'] = attr.file_name
 
                 # 如果有缩略图
-                if hasattr(video, 'thumb') and video.thumb:
+                if hasattr(message.media.document, 'thumb') and message.media.document.thumb:
                     try:
-                        thumb_path = await self.client.download_media(video.thumb)
+                        thumb_path = await self.client.download_media(message.media.document.thumb)
                         media_info['thumb_path'] = thumb_path
                     except Exception as e:
                         logging.warning(f"无法下载视频缩略图: {str(e)}")
+
+            # 如果是音频
+            elif media_type == 'audio' and hasattr(message.media, 'document'):
+                if hasattr(message.media.document, 'attributes'):
+                    for attr in message.media.document.attributes:
+                        if hasattr(attr, 'duration'):
+                            media_info['duration'] = attr.duration
+                        if hasattr(attr, 'performer'):
+                            media_info['performer'] = attr.performer
+                        if hasattr(attr, 'title'):
+                            media_info['title'] = attr.title
+                        if hasattr(attr, 'file_name'):
+                            media_info['filename'] = attr.file_name
+
+            # 如果是动画
+            elif media_type == 'animation' and hasattr(message.media, 'document'):
+                if hasattr(message.media.document, 'attributes'):
+                    for attr in message.media.document.attributes:
+                        if hasattr(attr, 'w'):
+                            media_info['width'] = attr.w
+                        if hasattr(attr, 'h'):
+                            media_info['height'] = attr.h
+                        if hasattr(attr, 'duration'):
+                            media_info['duration'] = attr.duration
+                        if hasattr(attr, 'file_name'):
+                            media_info['filename'] = attr.file_name
+
+                # 如果有缩略图
+                if hasattr(message.media.document, 'thumb') and message.media.document.thumb:
+                    try:
+                        thumb_path = await self.client.download_media(message.media.document.thumb)
+                        media_info['thumb_path'] = thumb_path
+                    except Exception as e:
+                        logging.warning(f"无法下载动画缩略图: {str(e)}")
 
             # 如果是文档，获取文件名
             elif media_type == 'document' and hasattr(message.media, 'document'):
@@ -904,6 +998,10 @@ class MyMessageHandler:
                         if hasattr(attr, 'file_name'):
                             media_info['filename'] = attr.file_name
                             break
+
+                # 获取MIME类型
+                if hasattr(message.media.document, 'mime_type'):
+                    media_info['mime_type'] = message.media.document.mime_type
 
             # 将结果存入缓存
             self.media_cache[media_id] = media_info
@@ -1200,7 +1298,7 @@ class MyMessageHandler:
             # 如果有多个媒体文件，使用媒体组发送
             else:
                 # 准备媒体输入列表
-                from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
+                from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio, InputMediaAnimation
                 input_media = []
 
                 for i, media in enumerate(media_list):
@@ -1232,6 +1330,40 @@ class MyMessageHandler:
                                 media_kwargs['duration'] = media_info['duration']
 
                             input_media.append(InputMediaVideo(**media_kwargs))
+                        elif media['type'] == 'audio':
+                            audio_kwargs = {
+                                'media': file_data,
+                                'caption': caption,
+                                'parse_mode': 'Markdown' if caption else None
+                            }
+
+                            # 添加音频参数
+                            media_info = media['media_info']
+                            if 'duration' in media_info:
+                                audio_kwargs['duration'] = media_info['duration']
+                            if 'performer' in media_info:
+                                audio_kwargs['performer'] = media_info['performer']
+                            if 'title' in media_info:
+                                audio_kwargs['title'] = media_info['title']
+
+                            input_media.append(InputMediaAudio(**audio_kwargs))
+                        elif media['type'] == 'animation':
+                            anim_kwargs = {
+                                'media': file_data,
+                                'caption': caption,
+                                'parse_mode': 'Markdown' if caption else None
+                            }
+
+                            # 添加动画参数
+                            media_info = media['media_info']
+                            if 'width' in media_info:
+                                anim_kwargs['width'] = media_info['width']
+                            if 'height' in media_info:
+                                anim_kwargs['height'] = media_info['height']
+                            if 'duration' in media_info:
+                                anim_kwargs['duration'] = media_info['duration']
+
+                            input_media.append(InputMediaAnimation(**anim_kwargs))
                         elif media['type'] == 'document':
                             doc_kwargs = {
                                 'media': file_data,
@@ -1241,6 +1373,8 @@ class MyMessageHandler:
 
                             if 'filename' in media['media_info']:
                                 doc_kwargs['filename'] = media['media_info']['filename']
+                            if 'mime_type' in media['media_info']:
+                                doc_kwargs['mime_type'] = media['media_info']['mime_type']
 
                             input_media.append(InputMediaDocument(**doc_kwargs))
                         else:
@@ -1288,7 +1422,14 @@ class MyMessageHandler:
                             await self.bot.send_photo(**send_kwargs)
                         elif media['type'] == 'video':
                             send_kwargs['video'] = file_data
+                            send_kwargs['supports_streaming'] = True
                             await self.bot.send_video(**send_kwargs)
+                        elif media['type'] == 'audio':
+                            send_kwargs['audio'] = file_data
+                            await self.bot.send_audio(**send_kwargs)
+                        elif media['type'] == 'animation':
+                            send_kwargs['animation'] = file_data
+                            await self.bot.send_animation(**send_kwargs)
                         elif media['type'] == 'document':
                             send_kwargs['document'] = file_data
                             await self.bot.send_document(**send_kwargs)
@@ -1578,6 +1719,40 @@ class MyMessageHandler:
                             media_kwargs['duration'] = media_info['duration']
 
                         media = InputMediaVideo(**media_kwargs)
+                    elif media_type == 'audio':
+                        from telegram import InputMediaAudio
+                        audio_kwargs = {
+                            'media': file_data,
+                            'caption': text,
+                            'parse_mode': 'Markdown' if use_markdown else None
+                        }
+
+                        # 添加音频参数
+                        if 'duration' in media_info:
+                            audio_kwargs['duration'] = media_info['duration']
+                        if 'performer' in media_info:
+                            audio_kwargs['performer'] = media_info['performer']
+                        if 'title' in media_info:
+                            audio_kwargs['title'] = media_info['title']
+
+                        media = InputMediaAudio(**audio_kwargs)
+                    elif media_type == 'animation':
+                        from telegram import InputMediaAnimation
+                        anim_kwargs = {
+                            'media': file_data,
+                            'caption': text,
+                            'parse_mode': 'Markdown' if use_markdown else None
+                        }
+
+                        # 添加动画参数
+                        if 'width' in media_info:
+                            anim_kwargs['width'] = media_info['width']
+                        if 'height' in media_info:
+                            anim_kwargs['height'] = media_info['height']
+                        if 'duration' in media_info:
+                            anim_kwargs['duration'] = media_info['duration']
+
+                        media = InputMediaAnimation(**anim_kwargs)
                     elif media_type == 'document':
                         from telegram import InputMediaDocument
                         doc_kwargs = {
@@ -1646,6 +1821,37 @@ class MyMessageHandler:
                                 send_kwargs['thumb'] = thumb_file.read()
 
                         await self.bot.send_video(**send_kwargs)
+
+                        # 清理缩略图
+                        if 'thumb_path' in media_info and os.path.exists(media_info['thumb_path']):
+                            os.remove(media_info['thumb_path'])
+                    elif media_type == 'audio':
+                        send_kwargs['audio'] = file_data
+
+                        # 添加音频参数
+                        if 'duration' in media_info:
+                            send_kwargs['duration'] = media_info['duration']
+                        if 'performer' in media_info:
+                            send_kwargs['performer'] = media_info['performer']
+                        if 'title' in media_info:
+                            send_kwargs['title'] = media_info['title']
+
+                        await self.bot.send_audio(**send_kwargs)
+                    elif media_type == 'animation':
+                        send_kwargs['animation'] = file_data
+
+                        # 添加动画参数
+                        if 'width' in media_info:
+                            send_kwargs['width'] = media_info['width']
+                        if 'height' in media_info:
+                            send_kwargs['height'] = media_info['height']
+                        if 'duration' in media_info:
+                            send_kwargs['duration'] = media_info['duration']
+                        if 'thumb_path' in media_info and os.path.exists(media_info['thumb_path']):
+                            with open(media_info['thumb_path'], 'rb') as thumb_file:
+                                send_kwargs['thumb'] = thumb_file.read()
+
+                        await self.bot.send_animation(**send_kwargs)
 
                         # 清理缩略图
                         if 'thumb_path' in media_info and os.path.exists(media_info['thumb_path']):

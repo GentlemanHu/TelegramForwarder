@@ -17,6 +17,7 @@ from telegram.ext import (
     filters
 )
 import logging
+import datetime
 from custom_keyboard import CustomKeyboard
 from typing import Optional, Dict, Any
 from telethon import TelegramClient
@@ -195,8 +196,22 @@ self.handle_confirm_remove_pair,
             CallbackQueryHandler(self.show_time_settings_menu, pattern='^time_settings$'),
             CallbackQueryHandler(self.show_pair_selection_for_filter, pattern='^add_filter_rule$'),
             CallbackQueryHandler(self.show_pair_selection_for_time, pattern='^add_time_filter$'),
-            CallbackQueryHandler(self.show_filter_rules_list, pattern='^list_filter_rules$'),
-            CallbackQueryHandler(self.show_time_filters_list, pattern='^list_time_filters$'),
+            CallbackQueryHandler(self.show_filter_rules_list, pattern='^list_filter_rules(_[0-9]+)?$'),
+            CallbackQueryHandler(self.show_time_filters_list, pattern='^list_time_filters(_[0-9]+)?$'),
+
+            # 过滤规则处理
+            CallbackQueryHandler(self.handle_filter_pair_selection, pattern='^filter_pair_'),
+            CallbackQueryHandler(self.handle_filter_type_selection, pattern='^filter_type_'),
+            CallbackQueryHandler(self.handle_filter_mode_selection, pattern='^filter_mode_'),
+            CallbackQueryHandler(self.handle_filter_pattern_input, pattern='^filter_pattern_'),
+            CallbackQueryHandler(self.handle_delete_filter_rule, pattern='^delete_filter_rule_'),
+
+            # 时间过滤处理
+            CallbackQueryHandler(self.handle_time_pair_selection, pattern='^time_pair_'),
+            CallbackQueryHandler(self.handle_time_mode_selection, pattern='^time_mode_'),
+            CallbackQueryHandler(self.handle_time_range_input, pattern='^time_range_'),
+            CallbackQueryHandler(self.handle_days_input, pattern='^days_'),
+            CallbackQueryHandler(self.handle_delete_time_filter, pattern='^delete_time_filter_'),
 
             # 返回处理
             CallbackQueryHandler(self.handle_back, pattern='^back_to_'),
@@ -1421,6 +1436,14 @@ self.handle_confirm_remove_pair,
         user_id = update.effective_user.id
         lang = self.db.get_user_language(user_id)
 
+        # 获取页码
+        page = 1
+        if query.data and '_' in query.data:
+            try:
+                page = int(query.data.split('_')[-1])
+            except ValueError:
+                page = 1
+
         # 获取所有频道配对
         pairs = self.db.get_all_channel_pairs()
 
@@ -1433,10 +1456,20 @@ self.handle_confirm_remove_pair,
             )
             return
 
+        # 每页显示的配对数
+        per_page = 3
+        total_pages = (len(pairs) + per_page - 1) // per_page
+        page = max(1, min(page, total_pages))
+
+        # 获取当前页的配对
+        start_idx = (page - 1) * per_page
+        end_idx = min(start_idx + per_page, len(pairs))
+        current_pairs = pairs[start_idx:end_idx]
+
         text = get_text(lang, 'filter_rules_menu') + "\n\n"
 
         # 获取每个配对的过滤规则
-        for pair in pairs:
+        for pair in current_pairs:
             pair_id = pair['pair_id']
             rules = self.db.get_filter_rules(pair_id)
 
@@ -1449,14 +1482,45 @@ self.handle_confirm_remove_pair,
                     rule_type = get_text(lang, rule['rule_type'].lower())
                     filter_mode = get_text(lang, rule['filter_mode'].lower())
                     text += f"- {rule_type} ({filter_mode}): {rule['pattern']}\n"
+                    # 添加删除按钮的说明
+                    text += f"  [删除此规则: /delete_filter_{rule['rule_id']}]\n"
 
-        keyboard = [[InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")]]
+        # 构建分页按钮
+        keyboard = []
+        navigation = []
 
-        await query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
+        if page > 1:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'previous_page'),
+                callback_data=f"list_filter_rules_{page-1}"
+            ))
+        if page < total_pages:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'next_page'),
+                callback_data=f"list_filter_rules_{page+1}"
+            ))
+
+        if navigation:
+            keyboard.append(navigation)
+
+        keyboard.append([InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")])
+
+        # 添加当前页码信息
+        text += f"\n{get_text(lang, 'page_info').format(current=page, total=total_pages)}"
+
+        try:
+            await query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logging.error(f"Error in show_filter_rules_list: {e}")
+            # 如果消息太长，尝试发送简化版本
+            await query.message.edit_text(
+                get_text(lang, 'list_too_long'),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
     async def show_time_filters_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """显示时间过滤器列表"""
@@ -1465,6 +1529,14 @@ self.handle_confirm_remove_pair,
 
         user_id = update.effective_user.id
         lang = self.db.get_user_language(user_id)
+
+        # 获取页码
+        page = 1
+        if query.data and '_' in query.data:
+            try:
+                page = int(query.data.split('_')[-1])
+            except ValueError:
+                page = 1
 
         # 获取所有频道配对
         pairs = self.db.get_all_channel_pairs()
@@ -1478,10 +1550,20 @@ self.handle_confirm_remove_pair,
             )
             return
 
+        # 每页显示的配对数
+        per_page = 3
+        total_pages = (len(pairs) + per_page - 1) // per_page
+        page = max(1, min(page, total_pages))
+
+        # 获取当前页的配对
+        start_idx = (page - 1) * per_page
+        end_idx = min(start_idx + per_page, len(pairs))
+        current_pairs = pairs[start_idx:end_idx]
+
         text = get_text(lang, 'time_settings_menu') + "\n\n"
 
         # 获取每个配对的时间过滤器
-        for pair in pairs:
+        for pair in current_pairs:
             pair_id = pair['pair_id']
             filters = self.db.get_time_filters(pair_id)
 
@@ -1494,11 +1576,555 @@ self.handle_confirm_remove_pair,
                     mode = get_text(lang, filter['mode'].lower())
                     days = filter['days_of_week']
                     text += f"- {mode}: {filter['start_time']}-{filter['end_time']} ({days})\n"
+                    # 添加删除按钮的说明
+                    text += f"  [删除此规则: /delete_time_{filter['filter_id']}]\n"
 
-        keyboard = [[InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")]]
+        # 构建分页按钮
+        keyboard = []
+        navigation = []
+
+        if page > 1:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'previous_page'),
+                callback_data=f"list_time_filters_{page-1}"
+            ))
+        if page < total_pages:
+            navigation.append(InlineKeyboardButton(
+                get_text(lang, 'next_page'),
+                callback_data=f"list_time_filters_{page+1}"
+            ))
+
+        if navigation:
+            keyboard.append(navigation)
+
+        keyboard.append([InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")])
+
+        # 添加当前页码信息
+        text += f"\n{get_text(lang, 'page_info').format(current=page, total=total_pages)}"
+
+        try:
+            await query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logging.error(f"Error in show_time_filters_list: {e}")
+            # 如果消息太长，尝试发送简化版本
+            await query.message.edit_text(
+                get_text(lang, 'list_too_long'),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+    async def handle_filter_pair_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理过滤规则的频道配对选择"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取配对ID
+        pair_id = query.data.split('_')[-1]
+        context.user_data['filter_pair_id'] = pair_id
+
+        # 解析配对ID获取频道信息
+        try:
+            monitor_id, forward_id = pair_id.split(':')
+            monitor_info = self.db.get_channel_info(int(monitor_id))
+            forward_info = self.db.get_channel_info(int(forward_id))
+
+            if not monitor_info or not forward_info:
+                await query.message.edit_text(
+                    get_text(lang, 'channel_not_found'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
+                    ]])
+                )
+                return
+
+            # 显示过滤类型选择
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        get_text(lang, 'whitelist'),
+                        callback_data=f"filter_type_WHITELIST_{pair_id}"
+                    ),
+                    InlineKeyboardButton(
+                        get_text(lang, 'blacklist'),
+                        callback_data=f"filter_type_BLACKLIST_{pair_id}"
+                    )
+                ],
+                [InlineKeyboardButton(get_text(lang, 'back'), callback_data="add_filter_rule")]
+            ]
+
+            await query.message.edit_text(
+                get_text(lang, 'select_filter_type'),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        except Exception as e:
+            logging.error(f"Error in handle_filter_pair_selection: {e}")
+            await query.message.edit_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
+                ]])
+            )
+
+    async def handle_filter_type_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理过滤类型选择"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 解析数据
+        parts = query.data.split('_')
+        filter_type = parts[2]
+        pair_id = parts[3]
+
+        # 保存到用户数据
+        context.user_data['filter_type'] = filter_type
+        context.user_data['filter_pair_id'] = pair_id
+
+        # 显示过滤模式选择
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    get_text(lang, 'keyword'),
+                    callback_data=f"filter_mode_KEYWORD_{pair_id}"
+                ),
+                InlineKeyboardButton(
+                    get_text(lang, 'regex'),
+                    callback_data=f"filter_mode_REGEX_{pair_id}"
+                )
+            ],
+            [InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"filter_pair_{pair_id}")]
+        ]
 
         await query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
+            get_text(lang, 'select_filter_mode'),
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
+    async def handle_filter_mode_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理过滤模式选择"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 解析数据
+        parts = query.data.split('_')
+        filter_mode = parts[2]
+        pair_id = parts[3]
+
+        # 保存到用户数据
+        context.user_data['filter_mode'] = filter_mode
+
+        # 创建一个唯一的模式标识符
+        pattern_id = f"{user_id}_{int(datetime.now().timestamp())}"
+        context.user_data['pattern_id'] = pattern_id
+
+        # 显示输入模式的提示
+        keyboard = [
+            [InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"filter_type_{context.user_data['filter_type']}_{pair_id}")]
+        ]
+
+        # 注册一个消息处理器来捕获用户的下一条消息
+        # 这里我们使用回调数据来标记模式输入状态
+        await query.message.edit_text(
+            get_text(lang, 'enter_filter_pattern'),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        # 将状态设置为等待模式输入
+        # 我们使用回调数据来记录状态，而不是使用ConversationHandler
+        # 用户可以直接回复消息来输入模式
+        # 我们将在下一步中处理这个消息
+
+    async def handle_filter_pattern_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理过滤模式输入"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取用户输入的模式
+        pattern = update.message.text.strip()
+
+        # 获取保存的数据
+        pair_id = context.user_data.get('filter_pair_id')
+        filter_type = context.user_data.get('filter_type')
+        filter_mode = context.user_data.get('filter_mode')
+
+        if not pair_id or not filter_type or not filter_mode:
+            await update.message.reply_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
+                ]])
+            )
+            return
+
+        try:
+            # 解析配对ID
+            monitor_id, forward_id = pair_id.split(':')
+
+            # 添加过滤规则
+            success = self.db.add_filter_rule(
+                monitor_id=int(monitor_id),
+                forward_id=int(forward_id),
+                rule_type=filter_type,
+                filter_mode=filter_mode,
+                pattern=pattern
+            )
+
+            if success:
+                await update.message.reply_text(
+                    get_text(lang, 'filter_rule_added'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
+                    ]])
+                )
+            else:
+                await update.message.reply_text(
+                    get_text(lang, 'error_occurred'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
+                    ]])
+                )
+
+        except Exception as e:
+            logging.error(f"Error in handle_filter_pattern_input: {e}")
+            await update.message.reply_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
+                ]])
+            )
+
+    async def handle_delete_filter_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理删除过滤规则"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取规则ID
+        rule_id = int(query.data.split('_')[-1])
+
+        try:
+            # 删除规则
+            success = self.db.remove_filter_rule(rule_id)
+
+            if success:
+                await query.message.edit_text(
+                    get_text(lang, 'filter_rule_deleted'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="list_filter_rules")
+                    ]])
+                )
+            else:
+                await query.message.edit_text(
+                    get_text(lang, 'error_occurred'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="list_filter_rules")
+                    ]])
+                )
+
+        except Exception as e:
+            logging.error(f"Error in handle_delete_filter_rule: {e}")
+            await query.message.edit_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="list_filter_rules")
+                ]])
+            )
+
+    async def handle_time_pair_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理时间过滤的频道配对选择"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取配对ID
+        pair_id = query.data.split('_')[-1]
+        context.user_data['time_pair_id'] = pair_id
+
+        # 解析配对ID获取频道信息
+        try:
+            monitor_id, forward_id = pair_id.split(':')
+            monitor_info = self.db.get_channel_info(int(monitor_id))
+            forward_info = self.db.get_channel_info(int(forward_id))
+
+            if not monitor_info or not forward_info:
+                await query.message.edit_text(
+                    get_text(lang, 'channel_not_found'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
+                    ]])
+                )
+                return
+
+            # 显示时间模式选择
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        get_text(lang, 'allow_mode'),
+                        callback_data=f"time_mode_ALLOW_{pair_id}"
+                    ),
+                    InlineKeyboardButton(
+                        get_text(lang, 'block_mode'),
+                        callback_data=f"time_mode_BLOCK_{pair_id}"
+                    )
+                ],
+                [InlineKeyboardButton(get_text(lang, 'back'), callback_data="add_time_filter")]
+            ]
+
+            await query.message.edit_text(
+                get_text(lang, 'select_time_mode'),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        except Exception as e:
+            logging.error(f"Error in handle_time_pair_selection: {e}")
+            await query.message.edit_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
+                ]])
+            )
+
+    async def handle_time_mode_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理时间模式选择"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 解析数据
+        parts = query.data.split('_')
+        time_mode = parts[2]
+        pair_id = parts[3]
+
+        # 保存到用户数据
+        context.user_data['time_mode'] = time_mode
+        context.user_data['time_pair_id'] = pair_id
+
+        # 显示时间范围输入提示
+        keyboard = [
+            [InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"time_pair_{pair_id}")]
+        ]
+
+        await query.message.edit_text(
+            get_text(lang, 'enter_time_range'),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_time_range_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理时间范围输入"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取用户输入的时间范围
+        time_range = update.message.text.strip()
+
+        # 验证时间范围格式
+        if not self._validate_time_range(time_range):
+            await update.message.reply_text(
+                get_text(lang, 'invalid_time_format'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"time_mode_{context.user_data.get('time_mode')}_{context.user_data.get('time_pair_id')}")
+                ]])
+            )
+            return
+
+        # 解析时间范围
+        start_time, end_time = time_range.split('-')
+        context.user_data['start_time'] = start_time.strip()
+        context.user_data['end_time'] = end_time.strip()
+
+        # 提示输入星期
+        keyboard = [
+            [InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"time_mode_{context.user_data.get('time_mode')}_{context.user_data.get('time_pair_id')}")]
+        ]
+
+        await update.message.reply_text(
+            get_text(lang, 'enter_days_of_week'),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_days_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理星期输入"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取用户输入的星期
+        days = update.message.text.strip()
+
+        # 验证星期格式
+        if not self._validate_days(days):
+            await update.message.reply_text(
+                get_text(lang, 'invalid_days_format'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"time_range_{context.user_data.get('time_pair_id')}")
+                ]])
+            )
+            return
+
+        # 获取保存的数据
+        pair_id = context.user_data.get('time_pair_id')
+        time_mode = context.user_data.get('time_mode')
+        start_time = context.user_data.get('start_time')
+        end_time = context.user_data.get('end_time')
+
+        if not pair_id or not time_mode or not start_time or not end_time:
+            await update.message.reply_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
+                ]])
+            )
+            return
+
+        try:
+            # 解析配对ID
+            monitor_id, forward_id = pair_id.split(':')
+
+            # 添加时间过滤器
+            success = self.db.add_time_filter(
+                monitor_id=int(monitor_id),
+                forward_id=int(forward_id),
+                mode=time_mode,
+                start_time=start_time,
+                end_time=end_time,
+                days_of_week=days
+            )
+
+            if success:
+                await update.message.reply_text(
+                    get_text(lang, 'time_filter_added'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
+                    ]])
+                )
+            else:
+                await update.message.reply_text(
+                    get_text(lang, 'error_occurred'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
+                    ]])
+                )
+
+        except Exception as e:
+            logging.error(f"Error in handle_days_input: {e}")
+            await update.message.reply_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
+                ]])
+            )
+
+    async def handle_delete_time_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理删除时间过滤器"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        lang = self.db.get_user_language(user_id)
+
+        # 获取过滤器ID
+        filter_id = int(query.data.split('_')[-1])
+
+        try:
+            # 删除过滤器
+            success = self.db.remove_time_filter(filter_id)
+
+            if success:
+                await query.message.edit_text(
+                    get_text(lang, 'time_filter_deleted'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="list_time_filters")
+                    ]])
+                )
+            else:
+                await query.message.edit_text(
+                    get_text(lang, 'error_occurred'),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(get_text(lang, 'back'), callback_data="list_time_filters")
+                    ]])
+                )
+
+        except Exception as e:
+            logging.error(f"Error in handle_delete_time_filter: {e}")
+            await query.message.edit_text(
+                get_text(lang, 'error_occurred'),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(get_text(lang, 'back'), callback_data="list_time_filters")
+                ]])
+            )
+
+    def _validate_time_range(self, time_range):
+        """验证时间范围格式"""
+        try:
+            if '-' not in time_range:
+                return False
+
+            start_time, end_time = time_range.split('-')
+            start_time = start_time.strip()
+            end_time = end_time.strip()
+
+            # 验证时间格式
+            datetime.datetime.strptime(start_time, '%H:%M')
+            datetime.datetime.strptime(end_time, '%H:%M')
+
+            return True
+        except Exception:
+            return False
+
+    def _validate_days(self, days):
+        """验证星期格式"""
+        valid_days = ['1', '2', '3', '4', '5', '6', '7']
+
+        # 允许的格式：1,2,3,4,5,6,7 或 1-5 或 1,3-5,7
+        try:
+            # 先按逗号分割
+            parts = days.split(',')
+
+            for part in parts:
+                part = part.strip()
+
+                if '-' in part:
+                    # 如果是范围，如 1-5
+                    start, end = part.split('-')
+                    start = start.strip()
+                    end = end.strip()
+
+                    if start not in valid_days or end not in valid_days:
+                        return False
+
+                    if int(start) > int(end):
+                        return False
+                else:
+                    # 如果是单个数字，如 1
+                    if part not in valid_days:
+                        return False
+
+            return True
+        except Exception:
+            return False
