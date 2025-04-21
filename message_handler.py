@@ -223,23 +223,58 @@ class MyMessageHandler:
     def check_time_filter(self, monitor_id: int, forward_id: int, current_time: str, current_weekday: int) -> bool:
         """检查时间段过滤器"""
         try:
+            # 标准化频道ID
+            monitor_id = self._normalize_channel_id(monitor_id)
+            forward_id = self._normalize_channel_id(forward_id)
+
+            # 生成pair_id
+            pair_id = f"{monitor_id}:{forward_id}"
+            logging.info(f"生成频道配对ID(时间过滤): {pair_id}, 当前时间: {current_time}, 星期: {current_weekday}")
+
             # 获取时间段过滤器
-            time_filters = self.db.get_time_filters(monitor_id, forward_id)
+            time_filters = self.db.get_time_filters(pair_id=pair_id)
+            logging.info(f"获取到时间过滤规则: {len(time_filters)} 条")
 
             # 如果没有过滤器，允许所有时间
             if not time_filters:
+                logging.info("没有时间过滤规则，允许所有时间")
                 return True
 
             # 检查每个时间段过滤器
             for filter_rule in time_filters:
                 # 检查当前星期是否在过滤器的星期范围内
                 days_of_week = filter_rule.get('days_of_week', '').split(',')
-                if days_of_week and str(current_weekday) not in days_of_week:
+                logging.info(f"检查星期范围: {days_of_week}, 当前星期: {current_weekday}")
+
+                # 处理星期范围，支持如 1-5 的范围表示
+                weekday_match = False
+                for day_item in days_of_week:
+                    if '-' in day_item:
+                        # 如果是范围，如 1-5
+                        try:
+                            start_day, end_day = map(int, day_item.split('-'))
+                            if start_day <= current_weekday <= end_day:
+                                weekday_match = True
+                                break
+                        except ValueError:
+                            logging.warning(f"无效的星期范围格式: {day_item}")
+                    else:
+                        # 如果是单个星期，如 1
+                        try:
+                            if int(day_item.strip()) == current_weekday:
+                                weekday_match = True
+                                break
+                        except ValueError:
+                            logging.warning(f"无效的星期格式: {day_item}")
+
+                if days_of_week and not weekday_match:
+                    logging.info(f"当前星期 {current_weekday} 不在过滤器的星期范围内 {days_of_week}")
                     continue
 
                 # 检查当前时间是否在过滤器的时间范围内
                 start_time = filter_rule.get('start_time')
                 end_time = filter_rule.get('end_time')
+                logging.info(f"检查时间范围: {start_time}-{end_time}, 当前时间: {current_time}")
 
                 if start_time and end_time:
                     # 如果当前时间在范围内
@@ -248,23 +283,35 @@ class MyMessageHandler:
                     # 根据模式决定是否允许
                     mode = filter_rule.get('mode', 'ALLOW')
                     if mode == 'ALLOW' and in_time_range:
+                        logging.info(f"当前时间在允许范围内，允许转发")
                         return True
                     elif mode == 'BLOCK' and in_time_range:
+                        logging.info(f"当前时间在拦截范围内，拦截转发")
                         return False
 
             # 如果没有匹配的规则，默认允许
+            logging.info("没有匹配的时间过滤规则，默认允许")
             return True
 
         except Exception as e:
             logging.error(f"检查时间段过滤器时出错: {e}")
+            logging.error(f"错误详情: {traceback.format_exc()}")
             # 出错时默认允许
             return True
 
     def check_content_filter(self, monitor_id: int, forward_id: int, content: str) -> bool:
         """检查内容过滤器"""
         try:
+            # 标准化频道ID
+            monitor_id = self._normalize_channel_id(monitor_id)
+            forward_id = self._normalize_channel_id(forward_id)
+
+            # 生成pair_id
+            pair_id = f"{monitor_id}:{forward_id}"
+            logging.info(f"生成频道配对ID: {pair_id}")
+
             # 获取过滤规则
-            filter_rules = self.db.get_filter_rules(monitor_id, forward_id)
+            filter_rules = self.db.get_filter_rules(pair_id=pair_id)
             logging.info(f"获取到过滤规则: {len(filter_rules)} 条")
 
             # 如果没有规则，允许所有内容
@@ -315,14 +362,33 @@ class MyMessageHandler:
             # 出错时默认允许
             return True
 
+    def _normalize_channel_id(self, channel_id: int) -> int:
+        """标准化频道ID格式，确保存储时不带-100前缀"""
+        str_id = str(channel_id)
+        if str_id.startswith('-100'):
+            return int(str_id[4:])
+        elif str_id.startswith('-'):
+            return int(str_id[1:])
+        return int(str_id)
+
     def check_media_filter(self, monitor_id: int, forward_id: int, media_type: str) -> bool:
         """检查媒体类型过滤器"""
         try:
+            # 标准化频道ID
+            monitor_id = self._normalize_channel_id(monitor_id)
+            forward_id = self._normalize_channel_id(forward_id)
+
+            # 生成pair_id
+            pair_id = f"{monitor_id}:{forward_id}"
+            logging.info(f"生成频道配对ID(媒体过滤): {pair_id}, 媒体类型: {media_type}")
+
             # 获取媒体过滤规则
-            media_filters = self.db.get_media_filters(monitor_id, forward_id)
+            media_filters = self.db.get_media_filters(pair_id=pair_id)
+            logging.info(f"获取到媒体过滤规则: {len(media_filters)} 条")
 
             # 如果没有规则，允许所有媒体类型
             if not media_filters:
+                logging.info(f"没有媒体过滤规则，允许所有媒体类型: {media_type}")
                 return True
 
             # 检查是否有匹配当前媒体类型的规则
@@ -332,16 +398,20 @@ class MyMessageHandler:
                     logging.info(f"找到媒体类型过滤规则: {media_type}, 动作: {action}")
                     # 如果动作是拦截，返回False
                     if action == 'BLOCK':
+                        logging.info(f"媒体类型 {media_type} 被拦截")
                         return False
                     # 如果动作是允许，返回True
                     elif action == 'ALLOW':
+                        logging.info(f"媒体类型 {media_type} 被允许")
                         return True
 
             # 如果没有匹配的规则，默认允许
+            logging.info(f"没有找到匹配的媒体类型规则，默认允许: {media_type}")
             return True
 
         except Exception as e:
             logging.error(f"检查媒体类型过滤器时出错: {e}")
+            logging.error(f"错误详情: {traceback.format_exc()}")
             # 出错时默认允许
             return True
 
