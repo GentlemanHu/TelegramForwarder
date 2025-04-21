@@ -220,32 +220,94 @@ class Database:
             return False
 
     def remove_channel(self, channel_id: int) -> bool:
-        """移除频道"""
+        """移除频道及相关数据"""
         try:
             # 开始事务
             self.cursor.execute('BEGIN TRANSACTION')
 
-            # 停用所有涉及该频道的配对
+            # 记录详细日志
+            logging.info(f"开始删除频道: {channel_id}")
+
+            # 获取频道类型信息，用于日志记录
+            self.cursor.execute('''
+                SELECT channel_name, channel_type FROM channels
+                WHERE channel_id = ? AND is_active = 1
+            ''', (channel_id,))
+            channel_info = self.cursor.fetchone()
+
+            if not channel_info:
+                logging.warning(f"要删除的频道不存在或已经停用: {channel_id}")
+                self.conn.rollback()
+                return False
+
+            channel_name, channel_type = channel_info
+            logging.info(f"删除频道信息: {channel_name} (ID: {channel_id}, 类型: {channel_type})")
+
+            # 1. 停用所有相关的过滤规则
+            # 生成可能的pair_id模式
+            if channel_type == 'MONITOR':
+                # 如果是监控频道，则匹配所有以它为前缀的pair_id
+                pair_id_pattern = f"{channel_id}:%"
+                logging.info(f"停用以 {channel_id} 为监控频道的过滤规则")
+            else:
+                # 如果是转发频道，则匹配所有以它为后缀的pair_id
+                pair_id_pattern = f"%:{channel_id}"
+                logging.info(f"停用以 {channel_id} 为转发频道的过滤规则")
+
+            # 停用内容过滤规则
+            self.cursor.execute('''
+                UPDATE filter_rules
+                SET is_active = 0
+                WHERE pair_id LIKE ?
+            ''', (pair_id_pattern,))
+            content_filter_count = self.cursor.rowcount
+            logging.info(f"停用了 {content_filter_count} 条内容过滤规则")
+
+            # 停用时间过滤规则
+            self.cursor.execute('''
+                UPDATE time_filters
+                SET is_active = 0
+                WHERE pair_id LIKE ?
+            ''', (pair_id_pattern,))
+            time_filter_count = self.cursor.rowcount
+            logging.info(f"停用了 {time_filter_count} 条时间过滤规则")
+
+            # 停用媒体过滤规则
+            self.cursor.execute('''
+                UPDATE media_filters
+                SET is_active = 0
+                WHERE pair_id LIKE ?
+            ''', (pair_id_pattern,))
+            media_filter_count = self.cursor.rowcount
+            logging.info(f"停用了 {media_filter_count} 条媒体过滤规则")
+
+            # 2. 停用所有涉及该频道的配对
             self.cursor.execute('''
                 UPDATE channel_pairs
                 SET is_active = 0
                 WHERE monitor_channel_id = ? OR forward_channel_id = ?
             ''', (channel_id, channel_id))
+            pair_count = self.cursor.rowcount
+            logging.info(f"停用了 {pair_count} 个频道配对")
 
-            # 停用频道
+            # 3. 停用频道本身
             self.cursor.execute('''
                 UPDATE channels
                 SET is_active = 0
                 WHERE channel_id = ?
             ''', (channel_id,))
+            channel_count = self.cursor.rowcount
+            logging.info(f"停用了 {channel_count} 个频道")
 
             # 提交事务
             self.conn.commit()
+            logging.info(f"成功删除频道 {channel_name} (ID: {channel_id})")
             return True
         except sqlite3.Error as e:
             # 发生错误时回滚
             self.conn.rollback()
             logging.error(f"Error in remove_channel: {e}")
+            logging.error(f"Full error details: {str(e)}")
             return False
 
     def get_channels_by_type(self, channel_type: str, page: int = 1, per_page: int = 7) -> Dict[str, Any]:

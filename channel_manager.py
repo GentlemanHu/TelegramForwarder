@@ -163,7 +163,7 @@ class ChannelManager:
             ),
             CallbackQueryHandler(
                 self.handle_remove_channel,
-                pattern='^remove_channel_[0-9]+$'
+                pattern='^handle_remove_channel_[0-9]+$'
             ),
             CallbackQueryHandler(
                 self.handle_remove_confirmation,
@@ -655,59 +655,73 @@ self.handle_confirm_remove_pair,
             # 添加详细日志
             logging.info(f"处理删除频道请求: {query.data}")
 
-            channel_id = int(query.data.split('_')[-1])
-            logging.info(f"获取频道信息: {channel_id}")
+            # 解析频道ID
+            parts = query.data.split('_')
+            if len(parts) >= 3:
+                channel_id = int(parts[-1])
+                logging.info(f"获取频道信息: {channel_id}")
 
-            channel_info = self.db.get_channel_info(channel_id)
+                channel_info = self.db.get_channel_info(channel_id)
 
-            if not channel_info:
-                logging.error(f"未找到频道: {channel_id}")
+                if not channel_info:
+                    logging.error(f"未找到频道: {channel_id}")
+                    await query.message.reply_text(
+                        get_text(lang, 'channel_not_found'),
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(get_text(lang, 'back'), callback_data="remove_channel")
+                        ]])
+                    )
+                    # 删除原消息
+                    await query.message.delete()
+                    return
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            get_text(lang, 'confirm_delete'),
+                            callback_data=f"confirm_remove_channel_{channel_id}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            get_text(lang, 'back'),
+                            callback_data="remove_channel"
+                        )
+                    ]
+                ]
+
+                channel_type_display = get_text(
+                    lang,
+                    'monitor_channel' if channel_info['channel_type'] == 'MONITOR' else 'forward_channel'
+                )
+
+                logging.info(f"准备发送删除确认消息: {channel_info['channel_name']} (ID: {channel_id})")
+
+                # 发送新消息而不是编辑原消息
                 await query.message.reply_text(
-                    get_text(lang, 'channel_not_found'),
+                    get_text(lang, 'delete_confirm',
+                            name=channel_info['channel_name'],
+                            id=channel_info['channel_id'],
+                            type=channel_type_display),
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+
+                # 删除原消息
+                await query.message.delete()
+            else:
+                logging.error(f"无效的频道ID格式: {query.data}")
+                await query.message.reply_text(
+                    get_text(lang, 'error_occurred'),
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton(get_text(lang, 'back'), callback_data="remove_channel")
                     ]])
                 )
                 # 删除原消息
                 await query.message.delete()
-                return
-
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        get_text(lang, 'confirm_delete'),
-                        callback_data=f"confirm_remove_channel_{channel_id}"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        get_text(lang, 'back'),
-                        callback_data="remove_channel"
-                    )
-                ]
-            ]
-
-            channel_type_display = get_text(
-                lang,
-                'monitor_channel' if channel_info['channel_type'] == 'MONITOR' else 'forward_channel'
-            )
-
-            logging.info(f"准备发送删除确认消息: {channel_info['channel_name']} (ID: {channel_id})")
-
-            # 发送新消息而不是编辑原消息
-            await query.message.reply_text(
-                get_text(lang, 'delete_confirm',
-                        name=channel_info['channel_name'],
-                        id=channel_info['channel_id'],
-                        type=channel_type_display),
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
-            # 删除原消息
-            await query.message.delete()
 
         except Exception as e:
             logging.error(f"Error in handle_remove_channel: {e}")
+            logging.error(f"错误详情: {traceback.format_exc()}")
             # 发送新消息而不是编辑原消息
             await query.message.reply_text(
                 get_text(lang, 'error_occurred'),
@@ -828,9 +842,10 @@ self.handle_confirm_remove_pair,
             page = 1
             if query.data and '_' in query.data:
                 try:
-                    # 确保我们只获取最后一个数字作为页码
+                    # 分析回调数据
                     parts = query.data.split('_')
-                    if len(parts) > 1 and parts[-1].isdigit():
+                    # 如果只有一个数字部分，并且是简单的 remove_channel_X 格式，则这是页码
+                    if len(parts) == 2 and parts[-1].isdigit():
                         page = int(parts[-1])
                         logging.info(f"当前页码: {page}")
                 except ValueError:
@@ -874,7 +889,7 @@ self.handle_confirm_remove_pair,
                 for channel in monitor_channels:
                     keyboard.append([InlineKeyboardButton(
                         f"🔍 {channel['channel_name']}",
-                        callback_data=f"remove_channel_{channel['channel_id']}"
+                        callback_data=f"handle_remove_channel_{channel['channel_id']}"
                     )])
 
             if forward_channels:
@@ -885,7 +900,7 @@ self.handle_confirm_remove_pair,
                 for channel in forward_channels:
                     keyboard.append([InlineKeyboardButton(
                         f"📢 {channel['channel_name']}",
-                        callback_data=f"remove_channel_{channel['channel_id']}"
+                        callback_data=f"handle_remove_channel_{channel['channel_id']}"
                     )])
 
             # 导航按钮
