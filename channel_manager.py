@@ -203,18 +203,33 @@ self.handle_confirm_remove_pair,
             CallbackQueryHandler(self.handle_filter_pair_selection, pattern='^filter_pair_'),
             CallbackQueryHandler(self.handle_filter_type_selection, pattern='^filter_type_'),
             CallbackQueryHandler(self.handle_filter_mode_selection, pattern='^filter_mode_'),
-            CallbackQueryHandler(self.handle_filter_pattern_input, pattern='^filter_pattern_'),
             CallbackQueryHandler(self.handle_delete_filter_rule, pattern='^delete_filter_rule_'),
 
             # 时间过滤处理
             CallbackQueryHandler(self.handle_time_pair_selection, pattern='^time_pair_'),
             CallbackQueryHandler(self.handle_time_mode_selection, pattern='^time_mode_'),
-            CallbackQueryHandler(self.handle_time_range_input, pattern='^time_range_'),
-            CallbackQueryHandler(self.handle_days_input, pattern='^days_'),
             CallbackQueryHandler(self.handle_delete_time_filter, pattern='^delete_time_filter_'),
 
+            # 添加过滤规则输入的处理器
+            MessageHandler(
+                filters.TEXT & filters.Regex(r'^[^/]') & ~filters.COMMAND & ~filters.UpdateType.EDITED_MESSAGE,
+                self.handle_filter_pattern_input
+            ),
+
+            # 添加时间范围输入的处理器
+            MessageHandler(
+                filters.TEXT & filters.Regex(r'^\d{1,2}:\d{1,2}-\d{1,2}:\d{1,2}$') & ~filters.COMMAND & ~filters.UpdateType.EDITED_MESSAGE,
+                self.handle_time_range_input
+            ),
+
+            # 添加星期输入的处理器
+            MessageHandler(
+                filters.TEXT & filters.Regex(r'^[1-7]([,-][1-7])*$') & ~filters.COMMAND & ~filters.UpdateType.EDITED_MESSAGE,
+                self.handle_days_input
+            ),
+
             # 返回处理
-            CallbackQueryHandler(self.handle_back, pattern='^back_to_'),
+            # CallbackQueryHandler(self.handle_back, pattern='^back_to_'),
 
             # 通用管理菜单
             CallbackQueryHandler(self.show_channel_management, pattern='^channel_management$'),
@@ -1468,6 +1483,9 @@ self.handle_confirm_remove_pair,
 
         text = get_text(lang, 'filter_rules_menu') + "\n\n"
 
+        # 初始化键盘
+        keyboard = []
+
         # 获取每个配对的过滤规则
         for pair in current_pairs:
             pair_id = pair['pair_id']
@@ -1482,11 +1500,13 @@ self.handle_confirm_remove_pair,
                     rule_type = get_text(lang, rule['rule_type'].lower())
                     filter_mode = get_text(lang, rule['filter_mode'].lower())
                     text += f"- {rule_type} ({filter_mode}): {rule['pattern']}\n"
-                    # 添加删除按钮的说明
-                    text += f"  [删除此规则: /delete_filter_{rule['rule_id']}]\n"
+                    # 添加删除按钮
+                    keyboard.append([InlineKeyboardButton(
+                        f"删除: {rule['pattern'][:15]}{'...' if len(rule['pattern']) > 15 else ''}",
+                        callback_data=f"delete_filter_rule_{rule['rule_id']}"
+                    )])
 
         # 构建分页按钮
-        keyboard = []
         navigation = []
 
         if page > 1:
@@ -1562,6 +1582,9 @@ self.handle_confirm_remove_pair,
 
         text = get_text(lang, 'time_settings_menu') + "\n\n"
 
+        # 初始化键盘
+        keyboard = []
+
         # 获取每个配对的时间过滤器
         for pair in current_pairs:
             pair_id = pair['pair_id']
@@ -1576,11 +1599,13 @@ self.handle_confirm_remove_pair,
                     mode = get_text(lang, filter['mode'].lower())
                     days = filter['days_of_week']
                     text += f"- {mode}: {filter['start_time']}-{filter['end_time']} ({days})\n"
-                    # 添加删除按钮的说明
-                    text += f"  [删除此规则: /delete_time_{filter['filter_id']}]\n"
+                    # 添加删除按钮
+                    keyboard.append([InlineKeyboardButton(
+                        f"删除: {filter['start_time']}-{filter['end_time']}",
+                        callback_data=f"delete_time_filter_{filter['filter_id']}"
+                    )])
 
         # 构建分页按钮
-        keyboard = []
         navigation = []
 
         if page > 1:
@@ -1726,7 +1751,7 @@ self.handle_confirm_remove_pair,
         context.user_data['filter_mode'] = filter_mode
 
         # 创建一个唯一的模式标识符
-        pattern_id = f"{user_id}_{int(datetime.now().timestamp())}"
+        pattern_id = f"{user_id}_{int(datetime.datetime.now().timestamp())}"
         context.user_data['pattern_id'] = pattern_id
 
         # 显示输入模式的提示
@@ -1742,17 +1767,18 @@ self.handle_confirm_remove_pair,
         )
 
         # 将状态设置为等待模式输入
-        # 我们使用回调数据来记录状态，而不是使用ConversationHandler
-        # 用户可以直接回复消息来输入模式
-        # 我们将在下一步中处理这个消息
+        # 设置状态标记，表示正在等待过滤规则输入
+        context.user_data['waiting_for_filter_pattern'] = True
 
     async def handle_filter_pattern_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理过滤模式输入"""
-        query = update.callback_query
-        await query.answer()
-
+        # 这个函数处理用户发送的文本消息，而不是回调查询
         user_id = update.effective_user.id
         lang = self.db.get_user_language(user_id)
+
+        # 检查是否正在等待过滤规则输入
+        if not context.user_data.get('waiting_for_filter_pattern'):
+            return
 
         # 获取用户输入的模式
         pattern = update.message.text.strip()
@@ -1769,7 +1795,7 @@ self.handle_confirm_remove_pair,
                     InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
                 ]])
             )
-            return
+            return ConversationHandler.END
 
         try:
             # 解析配对ID
@@ -1785,12 +1811,16 @@ self.handle_confirm_remove_pair,
             )
 
             if success:
+                # 清除状态标记
+                context.user_data.pop('waiting_for_filter_pattern', None)
+
                 await update.message.reply_text(
                     get_text(lang, 'filter_rule_added'),
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
                     ]])
                 )
+                return ConversationHandler.END
             else:
                 await update.message.reply_text(
                     get_text(lang, 'error_occurred'),
@@ -1798,6 +1828,7 @@ self.handle_confirm_remove_pair,
                         InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
                     ]])
                 )
+                return ConversationHandler.END
 
         except Exception as e:
             logging.error(f"Error in handle_filter_pattern_input: {e}")
@@ -1807,6 +1838,7 @@ self.handle_confirm_remove_pair,
                     InlineKeyboardButton(get_text(lang, 'back'), callback_data="filter_rules")
                 ]])
             )
+            return ConversationHandler.END
 
     async def handle_delete_filter_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理删除过滤规则"""
@@ -1930,26 +1962,34 @@ self.handle_confirm_remove_pair,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
+        # 设置状态标记，表示正在等待时间范围输入
+        context.user_data['waiting_for_time_range'] = True
+
     async def handle_time_range_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理时间范围输入"""
-        query = update.callback_query
-        await query.answer()
-
+        # 这个函数处理用户发送的文本消息，而不是回调查询
         user_id = update.effective_user.id
         lang = self.db.get_user_language(user_id)
+
+        # 检查是否正在等待时间范围输入
+        if not context.user_data.get('waiting_for_time_range'):
+            return
 
         # 获取用户输入的时间范围
         time_range = update.message.text.strip()
 
         # 验证时间范围格式
         if not self._validate_time_range(time_range):
+            # 清除状态标记
+            context.user_data.pop('waiting_for_time_range', None)
+
             await update.message.reply_text(
                 get_text(lang, 'invalid_time_format'),
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"time_mode_{context.user_data.get('time_mode')}_{context.user_data.get('time_pair_id')}")
                 ]])
             )
-            return
+            return ConversationHandler.END
 
         # 解析时间范围
         start_time, end_time = time_range.split('-')
@@ -1966,26 +2006,34 @@ self.handle_confirm_remove_pair,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
+        # 设置状态标记，表示正在等待星期输入
+        context.user_data['waiting_for_days'] = True
+
     async def handle_days_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理星期输入"""
-        query = update.callback_query
-        await query.answer()
-
+        # 这个函数处理用户发送的文本消息，而不是回调查询
         user_id = update.effective_user.id
         lang = self.db.get_user_language(user_id)
+
+        # 检查是否正在等待星期输入
+        if not context.user_data.get('waiting_for_days'):
+            return
 
         # 获取用户输入的星期
         days = update.message.text.strip()
 
         # 验证星期格式
         if not self._validate_days(days):
+            # 清除状态标记
+            context.user_data.pop('waiting_for_days', None)
+
             await update.message.reply_text(
                 get_text(lang, 'invalid_days_format'),
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(get_text(lang, 'back'), callback_data=f"time_range_{context.user_data.get('time_pair_id')}")
                 ]])
             )
-            return
+            return ConversationHandler.END
 
         # 获取保存的数据
         pair_id = context.user_data.get('time_pair_id')
@@ -2000,7 +2048,7 @@ self.handle_confirm_remove_pair,
                     InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
                 ]])
             )
-            return
+            return ConversationHandler.END
 
         try:
             # 解析配对ID
@@ -2017,12 +2065,17 @@ self.handle_confirm_remove_pair,
             )
 
             if success:
+                # 清除状态标记
+                context.user_data.pop('waiting_for_days', None)
+                context.user_data.pop('waiting_for_time_range', None)
+
                 await update.message.reply_text(
                     get_text(lang, 'time_filter_added'),
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
                     ]])
                 )
+                return ConversationHandler.END
             else:
                 await update.message.reply_text(
                     get_text(lang, 'error_occurred'),
@@ -2030,6 +2083,7 @@ self.handle_confirm_remove_pair,
                         InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
                     ]])
                 )
+                return ConversationHandler.END
 
         except Exception as e:
             logging.error(f"Error in handle_days_input: {e}")
@@ -2039,6 +2093,7 @@ self.handle_confirm_remove_pair,
                     InlineKeyboardButton(get_text(lang, 'back'), callback_data="time_settings")
                 ]])
             )
+            return ConversationHandler.END
 
     async def handle_delete_time_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理删除时间过滤器"""
