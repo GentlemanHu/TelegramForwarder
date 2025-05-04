@@ -2,6 +2,8 @@
 import asyncio
 import logging
 import os
+import signal
+import sys
 from telegram.ext import Application, CommandHandler
 from telethon import TelegramClient, events
 from database import Database
@@ -206,22 +208,73 @@ class ForwardBot:
     async def stop(self):
         """停止机器人"""
         try:
+            logging.info("正在停止机器人...")
+
+            # 取消清理任务
             if self.message_handler.cleanup_task:
+                logging.info("取消清理任务")
                 self.message_handler.cleanup_task.cancel()
 
+            # 取消内存管理任务
+            if self.message_handler.memory_management_task:
+                logging.info("取消内存管理任务")
+                self.message_handler.memory_management_task.cancel()
+
             # 清理所有剩余的临时文件
+            logging.info(f"清理临时文件，数量: {len(self.message_handler.temp_files)}")
             for file_path in list(self.message_handler.temp_files.keys()):
                 await self.message_handler.cleanup_file(file_path)
 
+            # 释放内存
+            logging.info("清理内存缓存")
+            self.message_handler.media_cache.clear()
+            self.message_handler.processed_media_groups.clear()
+
+            # 主动请求垃圾回收
+            import gc
+            gc.collect()
+
+            # 停止应用和客户端
+            logging.info("停止Telegram应用")
             await self.application.stop()
+            logging.info("断开Telethon客户端")
             await self.client.disconnect()
+            logging.info("清理数据库连接")
             self.db.cleanup()
+
+            logging.info("机器人已成功停止!")
             print("Bot stopped successfully!")
         except Exception as e:
             logging.error(f"Error stopping bot: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+
+# 全局变量保存机器人实例，便于信号处理
+_bot_instance = None
+
+async def signal_handler():
+    """处理系统信号，优雅地关闭机器人"""
+    global _bot_instance
+    if _bot_instance:
+        logging.info("收到系统信号，正在优雅地关闭机器人...")
+        await _bot_instance.stop()
+        logging.info("机器人已安全关闭")
+    sys.exit(0)
+
+def setup_signal_handlers(loop):
+    """设置系统信号处理器"""
+    # 处理 SIGINT (Ctrl+C) 和 SIGTERM (系统终止信号)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(
+            sig,
+            lambda: asyncio.create_task(signal_handler())
+        )
+    logging.info("系统信号处理器已设置")
 
 async def main():
     """主函数"""
+    global _bot_instance
+
     # 设置日志
     # 确保日志目录存在
     log_dir = "logs"
@@ -239,13 +292,17 @@ async def main():
         ]
     )
 
+    # 设置信号处理器
+    loop = asyncio.get_running_loop()
+    setup_signal_handlers(loop)
+
     try:
         # 初始化配置
         config = Config()
 
         # 创建并启动机器人
-        bot = ForwardBot(config)
-        await bot.start()
+        _bot_instance = ForwardBot(config)
+        await _bot_instance.start()
 
     except Exception as e:
         logging.error(f"Critical error: {e}")

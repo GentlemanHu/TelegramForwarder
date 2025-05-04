@@ -24,11 +24,73 @@ class MyMessageHandler:
         self.media_cache = {}
         # 已处理的媒体组
         self.processed_media_groups = set()
+        # 内存管理任务
+        self.memory_management_task = None
 
     async def start_cleanup_task(self):
         """启动定期清理任务"""
         if self.cleanup_task is None:
             self.cleanup_task = asyncio.create_task(self.cleanup_old_files())
+
+        # 同时启动内存管理任务
+        if self.memory_management_task is None:
+            self.memory_management_task = asyncio.create_task(self.manage_memory())
+
+    def start_memory_management(self):
+        """启动内存管理"""
+        # 在下一个事件循环中启动内存管理任务
+        asyncio.create_task(self.manage_memory())
+
+    async def manage_memory(self):
+        """定期进行内存管理，防止内存泄漏和过度使用"""
+        while True:
+            try:
+                # 主动请求垃圾回收
+                import gc
+                gc.collect()
+
+                # 清理媒体缓存
+                current_time = datetime.now()
+                media_ids_to_remove = []
+                for media_id, media_info in list(self.media_cache.items()):
+                    if current_time - media_info.get('timestamp', current_time) > timedelta(minutes=5):  # 5分钟后清理
+                        media_ids_to_remove.append(media_id)
+
+                # 从缓存中移除过期的媒体
+                for media_id in media_ids_to_remove:
+                    self.media_cache.pop(media_id, None)
+                    logging.info(f"内存管理: 清理媒体缓存 {media_id}")
+
+                # 清理已处理的媒体组
+                if len(self.processed_media_groups) > 100:  # 如果超过100个，清理
+                    logging.info(f"内存管理: 清理已处理媒体组缓存，当前数量: {len(self.processed_media_groups)}")
+                    self.processed_media_groups.clear()
+
+                # 检查并清理过期的临时文件
+                files_to_remove = []
+                for file_path, timestamp in list(self.temp_files.items()):
+                    if current_time - timestamp > timedelta(minutes=30):  # 30分钟后清理
+                        if os.path.exists(file_path):
+                            try:
+                                os.remove(file_path)
+                                logging.info(f"内存管理: 清理过期文件 {file_path}")
+                            except Exception as e:
+                                logging.error(f"清理文件时出错: {str(e)}")
+                        files_to_remove.append(file_path)
+
+                # 从跟踪列表中移除已清理的文件
+                for file_path in files_to_remove:
+                    self.temp_files.pop(file_path, None)
+
+                # 记录内存使用情况
+                logging.info(f"内存管理: 媒体缓存数量={len(self.media_cache)}, 临时文件数量={len(self.temp_files)}, 已处理媒体组={len(self.processed_media_groups)}")
+
+            except Exception as e:
+                logging.error(f"内存管理任务出错: {str(e)}")
+                logging.error(traceback.format_exc())
+
+            # 每5分钟运行一次
+            await asyncio.sleep(300)
 
     async def cleanup_old_files(self):
         """定期清理过期的临时文件"""
@@ -474,6 +536,7 @@ class MyMessageHandler:
 
         file_path = media_info.get('file_path')
         media_type = media_info.get('media_type')
+        file_size = media_info.get('file_size', 0)
 
         try:
             # 只有在没有回复消息时才添加说明文字
@@ -487,92 +550,199 @@ class MyMessageHandler:
             elif message.text or message.caption:
                 caption = message.text or message.caption
 
-            # 发送文件
-            with open(file_path, 'rb') as media_file:
-                try:
-                    file_data = media_file.read()
-                    send_kwargs = {
-                        'chat_id': channel_id,
-                        'caption': caption,
-                        'read_timeout': 1800,
-                        'write_timeout': 1800
-                    }
+            # 准备发送参数
+            send_kwargs = {
+                'chat_id': channel_id,
+                'caption': caption,
+                'read_timeout': 1800,
+                'write_timeout': 1800
+            }
 
-                    if reply_to_message_id:
-                        send_kwargs['reply_to_message_id'] = reply_to_message_id
+            if reply_to_message_id:
+                send_kwargs['reply_to_message_id'] = reply_to_message_id
 
-                    if media_type == 'photo':
-                        send_kwargs['photo'] = file_data
+            # 大文件阈值，超过该值使用流式发送
+            large_file_threshold = 20 * 1024 * 1024  # 20MB
+            is_large_file = file_size > large_file_threshold
+
+            if is_large_file:
+                logging.info(f"检测到大文件 ({file_size/(1024*1024):.2f}MB)，使用流式发送")
+
+            # 如果是大文件，使用流式发送
+            if is_large_file:
+                # 对于大文件，直接传递文件路径
+                if media_type == 'photo':
+                    send_kwargs['photo'] = open(file_path, 'rb')
+                    try:
                         await self.bot.send_photo(**send_kwargs)
-                    elif media_type == 'video':
-                        send_kwargs.update({
-                            'video': file_data,
-                            'supports_streaming': True
-                        })
+                    finally:
+                        send_kwargs['photo'].close()
+                elif media_type == 'video':
+                    send_kwargs.update({
+                        'video': open(file_path, 'rb'),
+                        'supports_streaming': True
+                    })
 
-                        # 添加视频参数
-                        if 'width' in media_info:
-                            send_kwargs['width'] = media_info['width']
-                        if 'height' in media_info:
-                            send_kwargs['height'] = media_info['height']
-                        if 'duration' in media_info:
-                            send_kwargs['duration'] = media_info['duration']
+                    # 添加视频参数
+                    if 'width' in media_info:
+                        send_kwargs['width'] = media_info['width']
+                    if 'height' in media_info:
+                        send_kwargs['height'] = media_info['height']
+                    if 'duration' in media_info:
+                        send_kwargs['duration'] = media_info['duration']
 
-                        # 如果有缩略图
+                    # 如果有缩略图
+                    thumb_file = None
+                    try:
                         if 'thumb_path' in media_info and os.path.exists(media_info['thumb_path']):
-                            with open(media_info['thumb_path'], 'rb') as thumb_file:
-                                send_kwargs['thumb'] = thumb_file.read()
+                            thumb_file = open(media_info['thumb_path'], 'rb')
+                            send_kwargs['thumb'] = thumb_file
 
                         await self.bot.send_video(**send_kwargs)
+                    finally:
+                        send_kwargs['video'].close()
+                        if thumb_file:
+                            thumb_file.close()
 
                         # 清理缩略图
                         if 'thumb_path' in media_info and os.path.exists(media_info['thumb_path']):
                             os.remove(media_info['thumb_path'])
-                    elif media_type == 'audio':
-                        send_kwargs.update({
-                            'audio': file_data
-                        })
+                elif media_type == 'audio':
+                    send_kwargs.update({
+                        'audio': open(file_path, 'rb')
+                    })
 
-                        # 添加音频参数
-                        if 'duration' in media_info:
-                            send_kwargs['duration'] = media_info['duration']
-                        if 'performer' in media_info:
-                            send_kwargs['performer'] = media_info['performer']
-                        if 'title' in media_info:
-                            send_kwargs['title'] = media_info['title']
+                    # 添加音频参数
+                    if 'duration' in media_info:
+                        send_kwargs['duration'] = media_info['duration']
+                    if 'performer' in media_info:
+                        send_kwargs['performer'] = media_info['performer']
+                    if 'title' in media_info:
+                        send_kwargs['title'] = media_info['title']
 
+                    try:
                         await self.bot.send_audio(**send_kwargs)
-                    elif media_type == 'animation':
-                        send_kwargs.update({
-                            'animation': file_data
-                        })
+                    finally:
+                        send_kwargs['audio'].close()
+                elif media_type == 'animation':
+                    send_kwargs.update({
+                        'animation': open(file_path, 'rb')
+                    })
 
-                        # 添加动画参数
-                        if 'width' in media_info:
-                            send_kwargs['width'] = media_info['width']
-                        if 'height' in media_info:
-                            send_kwargs['height'] = media_info['height']
-                        if 'duration' in media_info:
-                            send_kwargs['duration'] = media_info['duration']
+                    # 添加动画参数
+                    if 'width' in media_info:
+                        send_kwargs['width'] = media_info['width']
+                    if 'height' in media_info:
+                        send_kwargs['height'] = media_info['height']
+                    if 'duration' in media_info:
+                        send_kwargs['duration'] = media_info['duration']
 
+                    try:
                         await self.bot.send_animation(**send_kwargs)
-                    elif media_type == 'document':
-                        send_kwargs['document'] = file_data
-                        if 'filename' in media_info:
-                            send_kwargs['filename'] = media_info['filename']
+                    finally:
+                        send_kwargs['animation'].close()
+                elif media_type == 'document':
+                    send_kwargs['document'] = open(file_path, 'rb')
+                    if 'filename' in media_info:
+                        send_kwargs['filename'] = media_info['filename']
+                    try:
                         await self.bot.send_document(**send_kwargs)
-                    elif media_type == 'sticker':
-                        # 发送贴图
+                    finally:
+                        send_kwargs['document'].close()
+                elif media_type == 'sticker':
+                    # 发送贴图
+                    sticker_file = open(file_path, 'rb')
+                    try:
                         await self.bot.send_sticker(
                             chat_id=channel_id,
-                            sticker=file_data,
+                            sticker=sticker_file,
                             reply_to_message_id=reply_to_message_id
                         )
+                    finally:
+                        sticker_file.close()
+            else:
+                # 对于小文件，使用内存发送，但限制内存使用
+                with open(file_path, 'rb') as media_file:
+                    try:
+                        file_data = media_file.read()
 
-                    logging.info(f"文件发送成功: {media_type}" +
-                           (f" (回复到消息: {reply_to_message_id})" if reply_to_message_id else ""))
-                finally:
-                    del file_data  # 释放内存
+                        if media_type == 'photo':
+                            send_kwargs['photo'] = file_data
+                            await self.bot.send_photo(**send_kwargs)
+                        elif media_type == 'video':
+                            send_kwargs.update({
+                                'video': file_data,
+                                'supports_streaming': True
+                            })
+
+                            # 添加视频参数
+                            if 'width' in media_info:
+                                send_kwargs['width'] = media_info['width']
+                            if 'height' in media_info:
+                                send_kwargs['height'] = media_info['height']
+                            if 'duration' in media_info:
+                                send_kwargs['duration'] = media_info['duration']
+
+                            # 如果有缩略图
+                            if 'thumb_path' in media_info and os.path.exists(media_info['thumb_path']):
+                                with open(media_info['thumb_path'], 'rb') as thumb_file:
+                                    send_kwargs['thumb'] = thumb_file.read()
+
+                            await self.bot.send_video(**send_kwargs)
+
+                            # 清理缩略图
+                            if 'thumb_path' in media_info and os.path.exists(media_info['thumb_path']):
+                                os.remove(media_info['thumb_path'])
+                        elif media_type == 'audio':
+                            send_kwargs.update({
+                                'audio': file_data
+                            })
+
+                            # 添加音频参数
+                            if 'duration' in media_info:
+                                send_kwargs['duration'] = media_info['duration']
+                            if 'performer' in media_info:
+                                send_kwargs['performer'] = media_info['performer']
+                            if 'title' in media_info:
+                                send_kwargs['title'] = media_info['title']
+
+                            await self.bot.send_audio(**send_kwargs)
+                        elif media_type == 'animation':
+                            send_kwargs.update({
+                                'animation': file_data
+                            })
+
+                            # 添加动画参数
+                            if 'width' in media_info:
+                                send_kwargs['width'] = media_info['width']
+                            if 'height' in media_info:
+                                send_kwargs['height'] = media_info['height']
+                            if 'duration' in media_info:
+                                send_kwargs['duration'] = media_info['duration']
+
+                            await self.bot.send_animation(**send_kwargs)
+                        elif media_type == 'document':
+                            send_kwargs['document'] = file_data
+                            if 'filename' in media_info:
+                                send_kwargs['filename'] = media_info['filename']
+                            await self.bot.send_document(**send_kwargs)
+                        elif media_type == 'sticker':
+                            # 发送贴图
+                            await self.bot.send_sticker(
+                                chat_id=channel_id,
+                                sticker=file_data,
+                                reply_to_message_id=reply_to_message_id
+                            )
+                    finally:
+                        # 释放内存
+                        if 'file_data' in locals():
+                            del file_data
+                            # 主动请求垃圾回收
+                            import gc
+                            gc.collect()
+
+            logging.info(f"文件发送成功: {media_type}" +
+                       (f" (回复到消息: {reply_to_message_id})" if reply_to_message_id else ""))
 
             # 发送成功后清理文件
             await self.cleanup_file(file_path)
@@ -580,6 +750,7 @@ class MyMessageHandler:
 
         except Exception as e:
             logging.error(f"处理媒体文件时出错: {str(e)}")
+            logging.error(f"错误详情: {traceback.format_exc()}")
             if file_path:
                 await self.cleanup_file(file_path)
             return False
@@ -1045,12 +1216,18 @@ class MyMessageHandler:
 
         tmp = None
         file_path = None
-        chunk_size = 20 * 1024 * 1024  # 20MB 分块
+        # 减小分块大小，避免一次性占用过多内存
+        chunk_size = 5 * 1024 * 1024  # 5MB 分块
 
         try:
             # 获取文件大小
             file_size = getattr(message.media, 'file_size', 0) or getattr(message.media, 'size', 0)
             logging.info(f"开始下载媒体文件，大小: {file_size / (1024*1024):.2f}MB")
+
+            # 检查文件大小，如果超过限制，记录警告
+            max_safe_size = 100 * 1024 * 1024  # 100MB
+            if file_size > max_safe_size:
+                logging.warning(f"警告：文件大小 ({file_size/(1024*1024):.2f}MB) 超过安全阈值 ({max_safe_size/(1024*1024)}MB)，可能导致内存问题")
 
             # 确保媒体缓存目录存在
             media_cache_dir = "data/media_cache"
@@ -1060,20 +1237,32 @@ class MyMessageHandler:
             tmp = NamedTemporaryFile(delete=False, prefix='tg_', suffix=f'.{media_type}', dir=media_cache_dir)
             file_path = tmp.name
 
-            # 使用分块下载
+            # 使用分块下载，更频繁地刷新缓冲区
             downloaded_size = 0
+            last_progress_log = 0
             async for chunk in self.client.iter_download(message.media, chunk_size=chunk_size):
                 if chunk:
                     tmp.write(chunk)
                     downloaded_size += len(chunk)
-                    if downloaded_size % (50 * 1024 * 1024) == 0:
-                        progress = (downloaded_size / file_size) * 100 if file_size else 0
-                        logging.info(f"下载进度: {progress:.1f}% ({downloaded_size/(1024*1024):.1f}MB/{file_size/(1024*1024):.1f}MB)")
 
-                    if downloaded_size % (100 * 1024 * 1024) == 0:
+                    # 更频繁地刷新文件缓冲区，减少内存占用
+                    if downloaded_size % (10 * 1024 * 1024) == 0:  # 每10MB刷新一次
                         tmp.flush()
                         os.fsync(tmp.fileno())
 
+                        # 主动请求垃圾回收
+                        import gc
+                        gc.collect()
+
+                    # 更频繁地记录进度，每10%记录一次
+                    current_progress = int((downloaded_size / file_size) * 10) if file_size else 0
+                    if current_progress > last_progress_log:
+                        progress_percent = (downloaded_size / file_size) * 100 if file_size else 0
+                        logging.info(f"下载进度: {progress_percent:.1f}% ({downloaded_size/(1024*1024):.1f}MB/{file_size/(1024*1024):.1f}MB)")
+                        last_progress_log = current_progress
+
+            tmp.flush()
+            os.fsync(tmp.fileno())
             tmp.close()
             logging.info("媒体文件下载完成")
 
@@ -1091,79 +1280,88 @@ class MyMessageHandler:
                 'timestamp': datetime.now()
             }
 
-            # 收集特定媒体类型的额外信息
-            if media_type == 'video' and hasattr(message.media, 'document'):
-                # 从属性中获取视频信息
-                if hasattr(message.media.document, 'attributes'):
-                    for attr in message.media.document.attributes:
-                        if hasattr(attr, 'w'):
-                            media_info['width'] = attr.w
-                        if hasattr(attr, 'h'):
-                            media_info['height'] = attr.h
-                        if hasattr(attr, 'duration'):
-                            media_info['duration'] = attr.duration
-                        if hasattr(attr, 'file_name'):
-                            media_info['filename'] = attr.file_name
+            # 收集特定媒体类型的额外信息，但避免保存大量元数据
+            try:
+                # 视频信息
+                if media_type == 'video' and hasattr(message.media, 'document'):
+                    # 从属性中获取视频信息
+                    if hasattr(message.media.document, 'attributes'):
+                        for attr in message.media.document.attributes:
+                            if hasattr(attr, 'w'):
+                                media_info['width'] = attr.w
+                            if hasattr(attr, 'h'):
+                                media_info['height'] = attr.h
+                            if hasattr(attr, 'duration'):
+                                media_info['duration'] = attr.duration
+                            if hasattr(attr, 'file_name'):
+                                media_info['filename'] = attr.file_name
 
-                # 如果有缩略图
-                if hasattr(message.media.document, 'thumb') and message.media.document.thumb:
-                    try:
-                        thumb_path = await self.client.download_media(message.media.document.thumb)
-                        media_info['thumb_path'] = thumb_path
-                    except Exception as e:
-                        logging.warning(f"无法下载视频缩略图: {str(e)}")
+                    # 如果有缩略图，使用小尺寸缩略图
+                    if hasattr(message.media.document, 'thumb') and message.media.document.thumb:
+                        try:
+                            thumb_path = await self.client.download_media(message.media.document.thumb)
+                            media_info['thumb_path'] = thumb_path
+                        except Exception as e:
+                            logging.warning(f"无法下载视频缩略图: {str(e)}")
 
-            # 如果是音频
-            elif media_type == 'audio' and hasattr(message.media, 'document'):
-                if hasattr(message.media.document, 'attributes'):
-                    for attr in message.media.document.attributes:
-                        if hasattr(attr, 'duration'):
-                            media_info['duration'] = attr.duration
-                        if hasattr(attr, 'performer'):
-                            media_info['performer'] = attr.performer
-                        if hasattr(attr, 'title'):
-                            media_info['title'] = attr.title
-                        if hasattr(attr, 'file_name'):
-                            media_info['filename'] = attr.file_name
+                # 音频信息
+                elif media_type == 'audio' and hasattr(message.media, 'document'):
+                    if hasattr(message.media.document, 'attributes'):
+                        for attr in message.media.document.attributes:
+                            if hasattr(attr, 'duration'):
+                                media_info['duration'] = attr.duration
+                            if hasattr(attr, 'performer'):
+                                media_info['performer'] = attr.performer
+                            if hasattr(attr, 'title'):
+                                media_info['title'] = attr.title
+                            if hasattr(attr, 'file_name'):
+                                media_info['filename'] = attr.file_name
 
-            # 如果是动画
-            elif media_type == 'animation' and hasattr(message.media, 'document'):
-                if hasattr(message.media.document, 'attributes'):
-                    for attr in message.media.document.attributes:
-                        if hasattr(attr, 'w'):
-                            media_info['width'] = attr.w
-                        if hasattr(attr, 'h'):
-                            media_info['height'] = attr.h
-                        if hasattr(attr, 'duration'):
-                            media_info['duration'] = attr.duration
-                        if hasattr(attr, 'file_name'):
-                            media_info['filename'] = attr.file_name
+                # 动画信息
+                elif media_type == 'animation' and hasattr(message.media, 'document'):
+                    if hasattr(message.media.document, 'attributes'):
+                        for attr in message.media.document.attributes:
+                            if hasattr(attr, 'w'):
+                                media_info['width'] = attr.w
+                            if hasattr(attr, 'h'):
+                                media_info['height'] = attr.h
+                            if hasattr(attr, 'duration'):
+                                media_info['duration'] = attr.duration
+                            if hasattr(attr, 'file_name'):
+                                media_info['filename'] = attr.file_name
 
-                # 如果有缩略图
-                if hasattr(message.media.document, 'thumb') and message.media.document.thumb:
-                    try:
-                        thumb_path = await self.client.download_media(message.media.document.thumb)
-                        media_info['thumb_path'] = thumb_path
-                    except Exception as e:
-                        logging.warning(f"无法下载动画缩略图: {str(e)}")
+                    # 如果有缩略图
+                    if hasattr(message.media.document, 'thumb') and message.media.document.thumb:
+                        try:
+                            thumb_path = await self.client.download_media(message.media.document.thumb)
+                            media_info['thumb_path'] = thumb_path
+                        except Exception as e:
+                            logging.warning(f"无法下载动画缩略图: {str(e)}")
 
-            # 如果是文档，获取文件名
-            elif media_type == 'document' and hasattr(message.media, 'document'):
-                if hasattr(message.media.document, 'attributes'):
-                    for attr in message.media.document.attributes:
-                        if hasattr(attr, 'file_name'):
-                            media_info['filename'] = attr.file_name
-                            break
+                # 文档信息
+                elif media_type == 'document' and hasattr(message.media, 'document'):
+                    if hasattr(message.media.document, 'attributes'):
+                        for attr in message.media.document.attributes:
+                            if hasattr(attr, 'file_name'):
+                                media_info['filename'] = attr.file_name
+                                break
 
-                # 获取MIME类型
-                if hasattr(message.media.document, 'mime_type'):
-                    media_info['mime_type'] = message.media.document.mime_type
+                    # 获取MIME类型
+                    if hasattr(message.media.document, 'mime_type'):
+                        media_info['mime_type'] = message.media.document.mime_type
+            except Exception as metadata_error:
+                logging.warning(f"获取媒体元数据时出错: {str(metadata_error)}")
+                # 继续处理，不因元数据错误而中断
 
             # 将结果存入缓存
             self.media_cache[media_id] = media_info
 
             # 设置缓存过期时间（例如10分钟后自动清理）
             asyncio.create_task(self.clear_media_cache(media_id, 600))
+
+            # 主动请求垃圾回收
+            import gc
+            gc.collect()
 
             return media_info
 
@@ -1416,8 +1614,17 @@ class MyMessageHandler:
             # 如果只有一个媒体文件，使用单个发送
             if len(media_list) == 1:
                 media = media_list[0]
-                with open(media['path'], 'rb') as media_file:
-                    file_data = media_file.read()
+                file_path = media['path']
+                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+                # 大文件阈值，超过该值使用流式发送
+                large_file_threshold = 20 * 1024 * 1024  # 20MB
+                is_large_file = file_size > large_file_threshold
+
+                if is_large_file:
+                    logging.info(f"检测到大文件 ({file_size/(1024*1024):.2f}MB)，使用流式发送")
+
+                    # 准备发送参数
                     send_kwargs = {
                         'chat_id': channel_id,
                         'caption': media['caption'],
@@ -1428,11 +1635,15 @@ class MyMessageHandler:
                     if reply_to_message_id:
                         send_kwargs['reply_to_message_id'] = reply_to_message_id
 
+                    # 使用流式发送
                     if media['type'] == 'photo':
-                        send_kwargs['photo'] = file_data
-                        await self.bot.send_photo(**send_kwargs)
+                        send_kwargs['photo'] = open(file_path, 'rb')
+                        try:
+                            await self.bot.send_photo(**send_kwargs)
+                        finally:
+                            send_kwargs['photo'].close()
                     elif media['type'] == 'video':
-                        send_kwargs['video'] = file_data
+                        send_kwargs['video'] = open(file_path, 'rb')
                         send_kwargs['supports_streaming'] = True
 
                         # 添加视频参数
@@ -1444,111 +1655,200 @@ class MyMessageHandler:
                         if 'duration' in media_info:
                             send_kwargs['duration'] = media_info['duration']
 
-                        await self.bot.send_video(**send_kwargs)
+                        try:
+                            await self.bot.send_video(**send_kwargs)
+                        finally:
+                            send_kwargs['video'].close()
                     elif media['type'] == 'document':
-                        send_kwargs['document'] = file_data
+                        send_kwargs['document'] = open(file_path, 'rb')
                         if 'filename' in media['media_info']:
                             send_kwargs['filename'] = media['media_info']['filename']
-                        await self.bot.send_document(**send_kwargs)
-
-            # 如果有多个媒体文件，使用媒体组发送
-            else:
-                # 准备媒体输入列表
-                from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio, InputMediaAnimation
-                input_media = []
-
-                for i, media in enumerate(media_list):
+                        try:
+                            await self.bot.send_document(**send_kwargs)
+                        finally:
+                            send_kwargs['document'].close()
+                else:
+                    # 对于小文件，使用内存发送
                     with open(media['path'], 'rb') as media_file:
                         file_data = media_file.read()
-                        caption = media['caption'] if i == 0 else None  # 只在第一个媒体上显示标题
+                        send_kwargs = {
+                            'chat_id': channel_id,
+                            'caption': media['caption'],
+                            'read_timeout': 1800,
+                            'write_timeout': 1800
+                        }
+
+                        if reply_to_message_id:
+                            send_kwargs['reply_to_message_id'] = reply_to_message_id
 
                         if media['type'] == 'photo':
-                            input_media.append(InputMediaPhoto(
-                                media=file_data,
-                                caption=caption,
-                                parse_mode='Markdown' if caption else None
-                            ))
+                            send_kwargs['photo'] = file_data
+                            await self.bot.send_photo(**send_kwargs)
                         elif media['type'] == 'video':
-                            media_kwargs = {
-                                'media': file_data,
-                                'caption': caption,
-                                'parse_mode': 'Markdown' if caption else None,
-                                'supports_streaming': True
-                            }
+                            send_kwargs['video'] = file_data
+                            send_kwargs['supports_streaming'] = True
 
                             # 添加视频参数
                             media_info = media['media_info']
                             if 'width' in media_info:
-                                media_kwargs['width'] = media_info['width']
+                                send_kwargs['width'] = media_info['width']
                             if 'height' in media_info:
-                                media_kwargs['height'] = media_info['height']
+                                send_kwargs['height'] = media_info['height']
                             if 'duration' in media_info:
-                                media_kwargs['duration'] = media_info['duration']
+                                send_kwargs['duration'] = media_info['duration']
 
-                            input_media.append(InputMediaVideo(**media_kwargs))
-                        elif media['type'] == 'audio':
-                            audio_kwargs = {
-                                'media': file_data,
-                                'caption': caption,
-                                'parse_mode': 'Markdown' if caption else None
-                            }
-
-                            # 添加音频参数
-                            media_info = media['media_info']
-                            if 'duration' in media_info:
-                                audio_kwargs['duration'] = media_info['duration']
-                            if 'performer' in media_info:
-                                audio_kwargs['performer'] = media_info['performer']
-                            if 'title' in media_info:
-                                audio_kwargs['title'] = media_info['title']
-
-                            input_media.append(InputMediaAudio(**audio_kwargs))
-                        elif media['type'] == 'animation':
-                            anim_kwargs = {
-                                'media': file_data,
-                                'caption': caption,
-                                'parse_mode': 'Markdown' if caption else None
-                            }
-
-                            # 添加动画参数
-                            media_info = media['media_info']
-                            if 'width' in media_info:
-                                anim_kwargs['width'] = media_info['width']
-                            if 'height' in media_info:
-                                anim_kwargs['height'] = media_info['height']
-                            if 'duration' in media_info:
-                                anim_kwargs['duration'] = media_info['duration']
-
-                            input_media.append(InputMediaAnimation(**anim_kwargs))
+                            await self.bot.send_video(**send_kwargs)
                         elif media['type'] == 'document':
-                            doc_kwargs = {
-                                'media': file_data,
-                                'caption': caption,
-                                'parse_mode': 'Markdown' if caption else None
-                            }
-
+                            send_kwargs['document'] = file_data
                             if 'filename' in media['media_info']:
-                                doc_kwargs['filename'] = media['media_info']['filename']
-                            if 'mime_type' in media['media_info']:
-                                doc_kwargs['mime_type'] = media['media_info']['mime_type']
+                                send_kwargs['filename'] = media['media_info']['filename']
+                            await self.bot.send_document(**send_kwargs)
 
-                            input_media.append(InputMediaDocument(**doc_kwargs))
-                        else:
-                            # 如果是未知类型，默认作为文档处理
-                            input_media.append(InputMediaDocument(
-                                media=file_data,
-                                caption=caption,
-                                parse_mode='Markdown' if caption else None
-                            ))
+                        # 主动释放内存
+                        del file_data
+                        import gc
+                        gc.collect()
 
-                # 发送媒体组
-                await self.bot.send_media_group(
-                    chat_id=channel_id,
-                    media=input_media,
-                    reply_to_message_id=reply_to_message_id,
-                    read_timeout=1800,
-                    write_timeout=1800
-                )
+            # 如果有多个媒体文件，使用媒体组发送
+            else:
+                # 检查是否有大文件
+                has_large_files = False
+                large_file_threshold = 20 * 1024 * 1024  # 20MB
+
+                for media in media_list:
+                    file_path = media['path']
+                    if os.path.exists(file_path):
+                        file_size = os.path.getsize(file_path)
+                        if file_size > large_file_threshold:
+                            has_large_files = True
+                            logging.info(f"媒体组中检测到大文件: {file_path} ({file_size/(1024*1024):.2f}MB)")
+
+                # 如果有大文件，使用逐个发送的方式
+                if has_large_files:
+                    logging.info("媒体组包含大文件，将逐个发送")
+                    for media in media_list:
+                        # 使用单个发送方式
+                        await self.send_media_group(channel_id, [media], reply_to_message_id)
+                        # 每个文件发送后等待一小段时间，避免过快发送
+                        await asyncio.sleep(1)
+                else:
+                    # 准备媒体输入列表
+                    from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio, InputMediaAnimation
+                    input_media = []
+                    open_files = []  # 跟踪所有打开的文件句柄
+
+                    try:
+                        for i, media in enumerate(media_list):
+                            file_path = media['path']
+                            if not os.path.exists(file_path):
+                                logging.warning(f"媒体文件不存在: {file_path}")
+                                continue
+
+                            # 打开文件句柄而不是读取全部内容
+                            file_handle = open(file_path, 'rb')
+                            open_files.append(file_handle)
+
+                            caption = media['caption'] if i == 0 else None  # 只在第一个媒体上显示标题
+
+                            if media['type'] == 'photo':
+                                input_media.append(InputMediaPhoto(
+                                    media=file_handle,
+                                    caption=caption,
+                                    parse_mode='Markdown' if caption else None
+                                ))
+                            elif media['type'] == 'video':
+                                media_kwargs = {
+                                    'media': file_handle,
+                                    'caption': caption,
+                                    'parse_mode': 'Markdown' if caption else None,
+                                    'supports_streaming': True
+                                }
+
+                                # 添加视频参数
+                                media_info = media['media_info']
+                                if 'width' in media_info:
+                                    media_kwargs['width'] = media_info['width']
+                                if 'height' in media_info:
+                                    media_kwargs['height'] = media_info['height']
+                                if 'duration' in media_info:
+                                    media_kwargs['duration'] = media_info['duration']
+
+                                input_media.append(InputMediaVideo(**media_kwargs))
+                            elif media['type'] == 'audio':
+                                audio_kwargs = {
+                                    'media': file_handle,
+                                    'caption': caption,
+                                    'parse_mode': 'Markdown' if caption else None
+                                }
+
+                                # 添加音频参数
+                                media_info = media['media_info']
+                                if 'duration' in media_info:
+                                    audio_kwargs['duration'] = media_info['duration']
+                                if 'performer' in media_info:
+                                    audio_kwargs['performer'] = media_info['performer']
+                                if 'title' in media_info:
+                                    audio_kwargs['title'] = media_info['title']
+
+                                input_media.append(InputMediaAudio(**audio_kwargs))
+                            elif media['type'] == 'animation':
+                                anim_kwargs = {
+                                    'media': file_handle,
+                                    'caption': caption,
+                                    'parse_mode': 'Markdown' if caption else None
+                                }
+
+                                # 添加动画参数
+                                media_info = media['media_info']
+                                if 'width' in media_info:
+                                    anim_kwargs['width'] = media_info['width']
+                                if 'height' in media_info:
+                                    anim_kwargs['height'] = media_info['height']
+                                if 'duration' in media_info:
+                                    anim_kwargs['duration'] = media_info['duration']
+
+                                input_media.append(InputMediaAnimation(**anim_kwargs))
+                            elif media['type'] == 'document':
+                                doc_kwargs = {
+                                    'media': file_handle,
+                                    'caption': caption,
+                                    'parse_mode': 'Markdown' if caption else None
+                                }
+
+                                if 'filename' in media['media_info']:
+                                    doc_kwargs['filename'] = media['media_info']['filename']
+                                if 'mime_type' in media['media_info']:
+                                    doc_kwargs['mime_type'] = media['media_info']['mime_type']
+
+                                input_media.append(InputMediaDocument(**doc_kwargs))
+                            else:
+                                # 如果是未知类型，默认作为文档处理
+                                input_media.append(InputMediaDocument(
+                                    media=file_handle,
+                                    caption=caption,
+                                    parse_mode='Markdown' if caption else None
+                                ))
+
+                        if input_media:
+                            # 发送媒体组
+                            await self.bot.send_media_group(
+                                chat_id=channel_id,
+                                media=input_media,
+                                reply_to_message_id=reply_to_message_id,
+                                read_timeout=1800,
+                                write_timeout=1800
+                            )
+                    finally:
+                        # 关闭所有打开的文件
+                        for file_handle in open_files:
+                            try:
+                                file_handle.close()
+                            except Exception as e:
+                                logging.error(f"关闭文件句柄时出错: {str(e)}")
+
+                        # 主动请求垃圾回收
+                        import gc
+                        gc.collect()
 
             # 清理媒体文件
             for media in media_list:
@@ -1562,39 +1862,100 @@ class MyMessageHandler:
 
             # 如果失败，尝试逐个发送
             try:
+                logging.info("媒体组发送失败，尝试逐个发送")
                 for media in media_list:
-                    with open(media['path'], 'rb') as media_file:
-                        file_data = media_file.read()
-                        send_kwargs = {
-                            'chat_id': channel_id,
-                            'caption': media['caption'],
-                            'reply_to_message_id': reply_to_message_id,
-                            'read_timeout': 1800,
-                            'write_timeout': 1800
-                        }
+                    file_path = media['path']
+                    if not os.path.exists(file_path):
+                        logging.warning(f"媒体文件不存在: {file_path}")
+                        continue
 
-                        if media['type'] == 'photo':
-                            send_kwargs['photo'] = file_data
-                            await self.bot.send_photo(**send_kwargs)
-                        elif media['type'] == 'video':
-                            send_kwargs['video'] = file_data
-                            send_kwargs['supports_streaming'] = True
-                            await self.bot.send_video(**send_kwargs)
-                        elif media['type'] == 'audio':
-                            send_kwargs['audio'] = file_data
-                            await self.bot.send_audio(**send_kwargs)
-                        elif media['type'] == 'animation':
-                            send_kwargs['animation'] = file_data
-                            await self.bot.send_animation(**send_kwargs)
-                        elif media['type'] == 'document':
-                            send_kwargs['document'] = file_data
-                            await self.bot.send_document(**send_kwargs)
+                    file_size = os.path.getsize(file_path)
+                    large_file_threshold = 20 * 1024 * 1024  # 20MB
+                    is_large_file = file_size > large_file_threshold
 
-                    # 清理媒体文件
-                    await self.cleanup_file(media['path'])
+                    send_kwargs = {
+                        'chat_id': channel_id,
+                        'caption': media['caption'],
+                        'reply_to_message_id': reply_to_message_id,
+                        'read_timeout': 1800,
+                        'write_timeout': 1800
+                    }
+
+                    try:
+                        if is_large_file:
+                            logging.info(f"备用方法: 检测到大文件 ({file_size/(1024*1024):.2f}MB)，使用流式发送")
+
+                            # 使用流式发送
+                            if media['type'] == 'photo':
+                                send_kwargs['photo'] = open(file_path, 'rb')
+                                try:
+                                    await self.bot.send_photo(**send_kwargs)
+                                finally:
+                                    send_kwargs['photo'].close()
+                            elif media['type'] == 'video':
+                                send_kwargs['video'] = open(file_path, 'rb')
+                                send_kwargs['supports_streaming'] = True
+                                try:
+                                    await self.bot.send_video(**send_kwargs)
+                                finally:
+                                    send_kwargs['video'].close()
+                            elif media['type'] == 'audio':
+                                send_kwargs['audio'] = open(file_path, 'rb')
+                                try:
+                                    await self.bot.send_audio(**send_kwargs)
+                                finally:
+                                    send_kwargs['audio'].close()
+                            elif media['type'] == 'animation':
+                                send_kwargs['animation'] = open(file_path, 'rb')
+                                try:
+                                    await self.bot.send_animation(**send_kwargs)
+                                finally:
+                                    send_kwargs['animation'].close()
+                            elif media['type'] == 'document':
+                                send_kwargs['document'] = open(file_path, 'rb')
+                                try:
+                                    await self.bot.send_document(**send_kwargs)
+                                finally:
+                                    send_kwargs['document'].close()
+                        else:
+                            # 对于小文件，使用内存发送
+                            with open(file_path, 'rb') as media_file:
+                                file_data = media_file.read()
+
+                                if media['type'] == 'photo':
+                                    send_kwargs['photo'] = file_data
+                                    await self.bot.send_photo(**send_kwargs)
+                                elif media['type'] == 'video':
+                                    send_kwargs['video'] = file_data
+                                    send_kwargs['supports_streaming'] = True
+                                    await self.bot.send_video(**send_kwargs)
+                                elif media['type'] == 'audio':
+                                    send_kwargs['audio'] = file_data
+                                    await self.bot.send_audio(**send_kwargs)
+                                elif media['type'] == 'animation':
+                                    send_kwargs['animation'] = file_data
+                                    await self.bot.send_animation(**send_kwargs)
+                                elif media['type'] == 'document':
+                                    send_kwargs['document'] = file_data
+                                    await self.bot.send_document(**send_kwargs)
+
+                                # 释放内存
+                                del file_data
+                                import gc
+                                gc.collect()
+
+                        # 每个文件发送后等待一小段时间，避免过快发送
+                        await asyncio.sleep(1)
+                    except Exception as single_error:
+                        logging.error(f"发送单个媒体失败: {str(single_error)}")
+                        # 继续处理下一个媒体，不中断整个处理
+                    finally:
+                        # 清理媒体文件
+                        await self.cleanup_file(file_path)
 
             except Exception as e2:
                 logging.error(f"备用方法发送媒体失败: {str(e2)}")
+                logging.error(traceback.format_exc())
                 # 清理媒体文件
                 for media in media_list:
                     await self.cleanup_file(media['path'])
