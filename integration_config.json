@@ -1,0 +1,10 @@
+{
+    "websocket": {
+        "server_url": "ws://localhost:8765",
+        "reconnect_interval": 5
+    },
+    "logging": {
+        "level": "INFO",
+        "file": "integration.log"
+    }
+}

@@ -230,6 +230,15 @@ class ForwardBot:
             self.message_handler.media_cache.clear()
             self.message_handler.processed_media_groups.clear()
 
+            # 关闭WebSocket客户端
+            if hasattr(self.message_handler, 'enable_ws_forwarding') and self.message_handler.enable_ws_forwarding:
+                try:
+                    logging.info("关闭WebSocket客户端")
+                    self.message_handler.ws_client.close()
+                    logging.info("WebSocket客户端已关闭")
+                except Exception as e:
+                    logging.error(f"关闭WebSocket客户端时出错: {e}")
+
             # 主动请求垃圾回收
             import gc
             gc.collect()

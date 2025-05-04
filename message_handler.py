@@ -11,6 +11,15 @@ from datetime import datetime, timedelta, time
 from telegram import error as telegram_error
 from locales import get_text
 
+# 导入WebSocket客户端
+try:
+    from websocket_client import WebSocketClient
+    from config_loader import load_config
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
+    logging.warning("WebSocket客户端导入失败，vipBotTrader集成将不可用")
+
 class MyMessageHandler:
     def __init__(self, db, client: TelegramClient, bot):
         self.db = db
@@ -26,6 +35,26 @@ class MyMessageHandler:
         self.processed_media_groups = set()
         # 内存管理任务
         self.memory_management_task = None
+
+        # 初始化WebSocket客户端
+        self.enable_ws_forwarding = False
+        if WEBSOCKET_AVAILABLE:
+            try:
+                # 加载配置
+                config = load_config()
+                websocket_url = config['websocket']['server_url']
+                reconnect_interval = config['websocket']['reconnect_interval']
+
+                # 初始化WebSocket客户端
+                self.ws_client = WebSocketClient(
+                    server_url=websocket_url,
+                    reconnect_interval=reconnect_interval
+                )
+                self.enable_ws_forwarding = True
+                logging.info(f"WebSocket客户端已初始化，连接到: {websocket_url}")
+            except Exception as e:
+                logging.error(f"初始化WebSocket客户端失败: {e}")
+                logging.error(traceback.format_exc())
 
     async def start_cleanup_task(self):
         """启动定期清理任务"""
@@ -208,6 +237,36 @@ class MyMessageHandler:
         else:
             return 'unknown'
 
+    async def _forward_to_websocket(self, message, chat):
+        """异步后台处理WebSocket消息转发"""
+        try:
+            # 提取消息数据
+            sender = await message.get_sender()
+            message_data = {
+                "source_chat_id": str(chat.id),
+                "source_chat_title": getattr(chat, "title", "Unknown"),
+                "message_id": str(message.id),
+                "text": getattr(message, "text", "") or getattr(message, "caption", ""),
+                "sender_info": {
+                    "id": str(getattr(sender, "id", "")),
+                    "name": getattr(sender, "first_name", "Unknown"),
+                    "username": getattr(sender, "username", "")
+                },
+                "has_media": hasattr(message, "media"),
+                "media_type": self.get_media_type(message) if hasattr(message, "media") else "text"
+            }
+
+            # 发送消息到WebSocket（非阻塞）
+            success = self.ws_client.send_message(message_data)
+            if success:
+                logging.debug(f"消息已加入WebSocket发送队列: {message.id}")
+            else:
+                logging.warning(f"消息加入WebSocket发送队列失败: {message.id}")
+        except Exception as e:
+            # 捕获所有异常，确保不影响主流程
+            logging.error(f"准备WebSocket消息时出错: {e}")
+            logging.debug(traceback.format_exc())
+
     async def handle_channel_message(self, event):
         """处理频道消息"""
         try:
@@ -220,6 +279,11 @@ class MyMessageHandler:
 
             if not channel_info or not channel_info.get('is_active'):
                 return
+
+            # 将消息转发到WebSocket（不影响现有逻辑）
+            if self.enable_ws_forwarding:
+                # 使用异步任务在后台处理，不阻塜主流程
+                asyncio.create_task(self._forward_to_websocket(message, chat))
 
             # 获取所有转发频道
             forward_channels = self.db.get_all_forward_channels(chat.id)
